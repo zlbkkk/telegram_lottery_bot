@@ -4,7 +4,7 @@ import os
 import sys
 import threading
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats, BotCommandScopeAllChatAdministrators, BotCommandScopeDefault, MenuButtonCommands, MenuButtonDefault
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, filters, ChatMemberHandler
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, filters, ChatMemberHandler, MessageHandler
 from asgiref.sync import sync_to_async
 from django.db import transaction
 from django.db.models import Q
@@ -21,7 +21,8 @@ from jifen.checkin_handlers import (
     edit_checkin_text, 
     set_checkin_points, 
     back_to_points_setting,
-    back_to_checkin_rule
+    back_to_checkin_rule,
+    handle_points_input
 )
 
 # 导入群组处理模块
@@ -150,6 +151,9 @@ async def clear_all_commands_and_set_start(bot):
 # start命令处理函数
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """发送start菜单，显示用户加入的群组和添加机器人到新群组的按钮"""
+    user = update.effective_user
+    logger.info(f"用户 {user.id} ({user.full_name}) 正在执行 /start 命令")
+    
     # 清除所有范围内的命令并只设置start命令
     try:
         await clear_all_commands_and_set_start(context.bot)
@@ -183,12 +187,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     invite_url = f"https://t.me/{bot_username}?startgroup=true"
     keyboard.append([InlineKeyboardButton("➕ 添加机器人到群组", url=invite_url)])
     
-    # 添加积分设置和抽奖设置按钮
-    keyboard.append([
-        InlineKeyboardButton("积分设置", callback_data="points_setting"),
-        InlineKeyboardButton("抽奖设置", callback_data="raffle_setting")
-    ])
-    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     # 构建欢迎消息
@@ -202,8 +200,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         welcome_text += "\n您还没有加入任何群组，请点击下方按钮将机器人添加到群组。"
     
-    welcome_text += "\n\n您也可以通过以下菜单使用各项功能："
-    
     await update.message.reply_text(
         welcome_text,
         reply_markup=reply_markup
@@ -213,6 +209,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理按钮回调"""
     query = update.callback_query
+    
+    # 记录用户点击按钮的日志
+    user = update.effective_user
+    button_data = query.data
+    logger.info(f"用户 {user.id} ({user.full_name}) 正在点击 {button_data} 按钮")
     
     try:
         # 使用try-except块包裹查询回答操作
@@ -232,6 +233,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # 根据回调数据处理不同的按钮
     try:
+        # 直接处理签到积分设置按钮
+        if query.data.startswith("set_checkin_points"):
+            logger.info(f"直接调用set_checkin_points函数处理按钮点击: {query.data}")
+            await set_checkin_points(update, context)
+            return
+        
         # 处理群组按钮的回调
         if query.data.startswith("group_"):
             group_id = int(query.data.split("_")[1])
@@ -279,12 +286,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             invite_url = f"https://t.me/{bot_username}?startgroup=true"
             keyboard.append([InlineKeyboardButton("➕ 添加机器人到群组", url=invite_url)])
             
-            # 添加积分设置和抽奖设置按钮
-            keyboard.append([
-                InlineKeyboardButton("积分设置", callback_data="points_setting"),
-                InlineKeyboardButton("抽奖设置", callback_data="raffle_setting")
-            ])
-            
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             # 构建消息
@@ -298,10 +299,39 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 welcome_text += "\n您还没有加入任何群组，请点击下方按钮将机器人添加到群组。"
             
-            welcome_text += "\n\n您也可以通过以下菜单使用各项功能："
-            
             await query.edit_message_text(
                 text=welcome_text,
+                reply_markup=reply_markup
+            )
+        
+        # 处理群组特定的积分设置    
+        elif query.data.startswith("points_setting_"):
+            # 从回调数据中提取群组ID
+            group_id = int(query.data.split("_")[2])
+            
+            # 创建三个按钮：签到规则、发言规则、邀请规则
+            keyboard = [
+                [
+                    InlineKeyboardButton("🔧 签到规则", callback_data=f"checkin_rule_{group_id}"),
+                    InlineKeyboardButton("🔧 发言规则", callback_data=f"message_rule_{group_id}"),
+                    InlineKeyboardButton("🔧 邀请规则", callback_data=f"invite_rule_{group_id}")
+                ],
+                [
+                    InlineKeyboardButton("◀️ 返回群组设置", callback_data=f"group_{group_id}")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # 尝试获取群组名称
+            group_name = "未知群组"
+            all_groups = await get_all_active_groups()
+            for gid, gtitle in all_groups:
+                if gid == group_id:
+                    group_name = gtitle
+                    break
+            
+            await query.edit_message_text(
+                text=f"您正在管理 {group_name} 的积分规则设置。请选择要查看的积分规则：",
                 reply_markup=reply_markup
             )
             
@@ -326,9 +356,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "edit_checkin_text":
             # 处理修改签到文字的请求
             await edit_checkin_text(update, context)
-        elif query.data == "set_checkin_points":
-            # 处理设置签到积分数量的请求
-            await set_checkin_points(update, context)
         elif query.data == "back_to_points_setting":
             # 返回到积分设置主菜单
             await back_to_points_setting(update, context)
@@ -360,6 +387,96 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "- 查看抽奖历史\n\n"
                 "此功能正在开发中..."
             )
+        
+        # 处理群组特定的规则回调
+        elif query.data.startswith("checkin_rule_"):
+            # 从回调数据中提取群组ID
+            group_id = int(query.data.split("_")[2])
+            
+            # 传递群组ID给签到规则处理函数
+            await show_checkin_rule_settings(update, context, group_id)
+            
+        elif query.data.startswith("message_rule_"):
+            # 从回调数据中提取群组ID
+            group_id = int(query.data.split("_")[2])
+            
+            # 尝试获取群组名称
+            group_name = "未知群组"
+            all_groups = await get_all_active_groups()
+            for gid, gtitle in all_groups:
+                if gid == group_id:
+                    group_name = gtitle
+                    break
+            
+            # 创建返回按钮
+            keyboard = [
+                [InlineKeyboardButton("◀️ 返回积分设置", callback_data=f"points_setting_{group_id}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                text=f"群组 {group_name} 的发言规则：\n"
+                "- 每条消息可获取积分\n"
+                "- 相同内容不重复计分\n"
+                "- 禁止刷屏获取积分\n\n"
+                "此功能正在开发中...",
+                reply_markup=reply_markup
+            )
+            
+        elif query.data.startswith("invite_rule_"):
+            # 从回调数据中提取群组ID
+            group_id = int(query.data.split("_")[2])
+            
+            # 尝试获取群组名称
+            group_name = "未知群组"
+            all_groups = await get_all_active_groups()
+            for gid, gtitle in all_groups:
+                if gid == group_id:
+                    group_name = gtitle
+                    break
+            
+            # 创建返回按钮
+            keyboard = [
+                [InlineKeyboardButton("◀️ 返回积分设置", callback_data=f"points_setting_{group_id}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                text=f"群组 {group_name} 的邀请规则：\n"
+                "- 邀请新用户加入可获取积分\n"
+                "- 被邀请用户留存时间越长奖励越多\n"
+                "- 恶意邀请将被取消资格\n\n"
+                "此功能正在开发中...",
+                reply_markup=reply_markup
+            )
+            
+        elif query.data.startswith("raffle_setting_"):
+            # 从回调数据中提取群组ID
+            group_id = int(query.data.split("_")[2])
+            
+            # 尝试获取群组名称
+            group_name = "未知群组"
+            all_groups = await get_all_active_groups()
+            for gid, gtitle in all_groups:
+                if gid == group_id:
+                    group_name = gtitle
+                    break
+            
+            # 创建返回按钮
+            keyboard = [
+                [InlineKeyboardButton("◀️ 返回群组设置", callback_data=f"group_{group_id}")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                text=f"群组 {group_name} 的抽奖设置功能：\n"
+                "- 创建新抽奖\n"
+                "- 管理现有抽奖\n"
+                "- 设置抽奖规则\n"
+                "- 查看抽奖历史\n\n"
+                "此功能正在开发中...",
+                reply_markup=reply_markup
+            )
     except Exception as e:
         logger.error(f"处理按钮回调时发生错误: {e}")
         try:
@@ -383,7 +500,7 @@ def run_bot():
         bot_running = True
     
     try:
-        logger.info("启动Telegram机器人...")
+        logger.info("正在启动Telegram机器人...")
         
         # 避免事件循环问题
         if sys.platform.startswith('win'):
@@ -399,16 +516,24 @@ def run_bot():
         
         # 只注册start命令处理器
         application.add_handler(CommandHandler("start", start))
+        logger.info("注册 /start 命令处理器")
         
         # 注册回调查询处理器
         application.add_handler(CallbackQueryHandler(button_callback))
+        logger.info("注册按钮回调处理器")
+        
+        # 注册消息处理器 - 用于处理用户输入的积分数量
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_points_input))
+        logger.info("注册消息处理器 - 处理用户输入的积分数量")
         
         # 注册聊天成员处理器
         # 处理机器人自己的成员状态变化（如被添加到群组或移除）
         application.add_handler(ChatMemberHandler(handle_my_chat_member, ChatMemberHandler.MY_CHAT_MEMBER))
+        logger.info("注册机器人成员状态变化处理器")
         
         # 处理其他用户的成员状态变化（如用户加入或离开群组）
         application.add_handler(ChatMemberHandler(handle_chat_member, ChatMemberHandler.CHAT_MEMBER))
+        logger.info("注册群组成员状态变化处理器")
         
         # 初始化时清除所有范围内的命令并只设置start命令
         loop.run_until_complete(clear_all_commands_and_set_start(application.bot))
@@ -423,6 +548,7 @@ def run_bot():
         # 无论如何都重置运行状态
         with bot_lock:
             bot_running = False
+            logger.info("机器人运行状态已重置")
 
 if __name__ == '__main__':
     run_bot() 

@@ -105,6 +105,7 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     cause_name = cause_user.full_name
     
     # 记录更详细的日志，帮助调试
+    logger.info(f"用户 {cause_user.id} ({cause_name}) 正在修改机器人在群组 {chat.id} ({chat.title}) 中的状态")
     logger.info(f"机器人成员状态变化 - 聊天ID: {chat.id}, 类型: {chat.type}, 操作人: {cause_name} ({cause_user.id})")
     
     # 获取机器人的新旧状态
@@ -310,6 +311,8 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # 被影响的成员
     member_user = update.chat_member.new_chat_member.user
     member_name = member_user.mention_html()
+    
+    logger.info(f"群组 {chat.id} ({chat.title}) 中的用户 {member_user.id} ({member_user.full_name}) 状态变化，由 {cause_user.id} ({cause_user.full_name}) 触发")
     
     # 记录用户加入或离开群组
     if not was_member and is_member:

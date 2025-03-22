@@ -4,7 +4,7 @@ from telegram.ext import ContextTypes
 from django.utils import timezone
 from django.db import transaction
 from asgiref.sync import sync_to_async
-from .models import Group
+from .models import Group, User
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -66,6 +66,23 @@ def update_bot_admin_status(chat_id, is_admin):
     return False
 
 @sync_to_async
+def save_user_to_group(telegram_id, username, first_name, last_name, group_obj, is_admin=False):
+    """同步函数：将用户添加到群组或更新用户信息"""
+    with transaction.atomic():
+        user, created = User.objects.update_or_create(
+            telegram_id=telegram_id,
+            group=group_obj,
+            defaults={
+                'username': username,
+                'first_name': first_name,
+                'last_name': last_name,
+                'is_admin': is_admin,
+                'is_active': True
+            }
+        )
+        return user, created
+
+@sync_to_async
 def mark_group_inactive(chat_id):
     """同步函数：将群组标记为非活跃状态"""
     with transaction.atomic():
@@ -87,6 +104,9 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     cause_user = update.my_chat_member.from_user
     cause_name = cause_user.full_name
     
+    # 记录更详细的日志，帮助调试
+    logger.info(f"机器人成员状态变化 - 聊天ID: {chat.id}, 类型: {chat.type}, 操作人: {cause_name} ({cause_user.id})")
+    
     # 获取机器人的新旧状态
     old_chat_member = update.my_chat_member.old_chat_member
     new_chat_member = update.my_chat_member.new_chat_member
@@ -96,6 +116,8 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     # 获取机器人在新旧状态下是否为管理员
     old_is_admin = old_status == ChatMember.ADMINISTRATOR
     new_is_admin = new_status == ChatMember.ADMINISTRATOR
+    
+    logger.info(f"机器人状态: 旧状态={old_status}, 新状态={new_status}, 权限变化: {old_is_admin}->{new_is_admin}")
     
     # 检查管理员状态是否发生变化
     admin_status_changed = old_is_admin != new_is_admin
@@ -155,6 +177,26 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
                         logger.info(f"Group {chat.title} ({chat.id}) 已经存储到 database")
                     else:
                         logger.info(f"Group {chat.title} ({chat.id}) 已经更新 in the database")
+                    
+                    # 记录添加机器人的用户到该群组的记录
+                    try:
+                        # 假设将添加机器人的用户作为管理员
+                        user_is_admin = True
+                        user, user_created = await save_user_to_group(
+                            cause_user.id,
+                            cause_user.username,
+                            cause_user.first_name,
+                            cause_user.last_name,
+                            group,
+                            user_is_admin
+                        )
+                        
+                        if user_created:
+                            logger.info(f"创建了用户 {cause_user.full_name} 在群组 {chat.title} 的记录")
+                        else:
+                            logger.info(f"更新了用户 {cause_user.full_name} 在群组 {chat.title} 的记录")
+                    except Exception as e:
+                        logger.error(f"将用户添加到群组记录时出错: {e}")
                         
                     # 不发送欢迎消息
                 except Exception as e:
@@ -214,6 +256,26 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
                         logger.info(f"Channel {chat.title} ({chat.id}) has been added to the database")
                     else:
                         logger.info(f"Channel {chat.title} ({chat.id}) has been updated in the database")
+                    
+                    # 记录添加机器人的用户到该频道的记录
+                    try:
+                        # 假设将添加机器人的用户作为管理员
+                        user_is_admin = True
+                        user, user_created = await save_user_to_group(
+                            cause_user.id,
+                            cause_user.username,
+                            cause_user.first_name,
+                            cause_user.last_name,
+                            group,
+                            user_is_admin
+                        )
+                        
+                        if user_created:
+                            logger.info(f"创建了用户 {cause_user.full_name} 在频道 {chat.title} 的记录")
+                        else:
+                            logger.info(f"更新了用户 {cause_user.full_name} 在频道 {chat.title} 的记录")
+                    except Exception as e:
+                        logger.error(f"将用户添加到频道记录时出错: {e}")
                 except Exception as e:
                     logger.error(f"Error saving channel to database: {e}")
             
@@ -249,5 +311,52 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     member_user = update.chat_member.new_chat_member.user
     member_name = member_user.mention_html()
     
-    # 可以在这里处理用户加入或离开群组的逻辑
-    # 例如更新用户数据库记录，跟踪邀请关系等 
+    # 记录用户加入或离开群组
+    if not was_member and is_member:
+        logger.info(f"用户 {member_user.full_name} 加入了群组 {chat.title}")
+        
+        try:
+            # 获取群组对象
+            group = await sync_to_async(Group.objects.filter(group_id=chat.id, is_active=True).first)()
+            
+            if group:
+                # 检查该用户是否为管理员
+                member = await chat.get_member(member_user.id)
+                is_admin = member.status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]
+                
+                # 添加用户到群组记录
+                user, created = await save_user_to_group(
+                    member_user.id,
+                    member_user.username,
+                    member_user.first_name,
+                    member_user.last_name,
+                    group,
+                    is_admin
+                )
+                
+                if created:
+                    logger.info(f"创建了用户 {member_user.full_name} 在群组 {chat.title} 的记录")
+                else:
+                    logger.info(f"更新了用户 {member_user.full_name} 在群组 {chat.title} 的记录")
+            else:
+                logger.warning(f"找不到群组记录: {chat.id} - {chat.title}")
+        except Exception as e:
+            logger.error(f"处理用户加入群组时出错: {e}")
+    
+    # 用户离开群组
+    elif was_member and not is_member:
+        logger.info(f"用户 {member_user.full_name} 离开了群组 {chat.title}")
+        
+        try:
+            # 获取群组对象
+            group = await sync_to_async(Group.objects.filter(group_id=chat.id).first)()
+            
+            if group:
+                # 标记用户为非活跃
+                user = await sync_to_async(User.objects.filter(telegram_id=member_user.id, group=group).first)()
+                if user:
+                    user.is_active = False
+                    await sync_to_async(user.save)()
+                    logger.info(f"用户 {member_user.full_name} 在群组 {chat.title} 的记录已标记为非活跃")
+        except Exception as e:
+            logger.error(f"处理用户离开群组时出错: {e}") 

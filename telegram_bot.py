@@ -22,7 +22,8 @@ from jifen.checkin_handlers import (
     set_checkin_points, 
     back_to_points_setting,
     back_to_checkin_rule,
-    handle_points_input
+    handle_points_input,
+    handle_checkin_text_input
 )
 
 # 导入群组处理模块
@@ -238,6 +239,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"直接调用set_checkin_points函数处理按钮点击: {query.data}")
             await set_checkin_points(update, context)
             return
+            
+        # 直接处理修改签到文字按钮
+        if query.data.startswith("edit_checkin_text"):
+            logger.info(f"直接调用edit_checkin_text函数处理按钮点击: {query.data}")
+            await edit_checkin_text(update, context)
+            return
         
         # 处理群组按钮的回调
         if query.data.startswith("group_"):
@@ -353,9 +360,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "checkin_rule":
             # 调用jifen/checkin_handlers.py中的处理函数
             await show_checkin_rule_settings(update, context)
-        elif query.data == "edit_checkin_text":
-            # 处理修改签到文字的请求
-            await edit_checkin_text(update, context)
         elif query.data == "back_to_points_setting":
             # 返回到积分设置主菜单
             await back_to_points_setting(update, context)
@@ -488,6 +492,33 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # 如果连发送错误消息都失败，只记录日志
             pass
 
+# 组合处理器 - 用于处理所有文本消息
+async def combined_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理所有文本消息，根据用户状态决定调用哪个具体的处理函数"""
+    # 获取用户状态
+    user_data = context.user_data
+    
+    # 记录接收到的消息，便于调试
+    user = update.effective_user
+    text = update.message.text
+    logger.info(f"用户 {user.id} ({user.full_name}) 发送消息: {text}")
+    
+    # 根据用户状态调用相应的处理函数
+    if user_data.get('waiting_for_checkin_text'):
+        logger.info(f"用户处于等待输入签到文字状态，调用handle_checkin_text_input")
+        # 确保积分输入状态被清除
+        user_data.pop('waiting_for_points', None)
+        await handle_checkin_text_input(update, context)
+    elif user_data.get('waiting_for_points'):
+        logger.info(f"用户处于等待输入积分状态，调用handle_points_input")
+        # 确保签到文字输入状态被清除
+        user_data.pop('waiting_for_checkin_text', None)
+        await handle_points_input(update, context)
+    else:
+        # 非特定状态下的消息无需处理
+        logger.debug(f"用户未处于特定状态，不处理消息")
+        return
+
 def run_bot():
     """运行机器人，线程安全的方式"""
     global bot_running
@@ -522,9 +553,9 @@ def run_bot():
         application.add_handler(CallbackQueryHandler(button_callback))
         logger.info("注册按钮回调处理器")
         
-        # 注册消息处理器 - 用于处理用户输入的积分数量
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_points_input))
-        logger.info("注册消息处理器 - 处理用户输入的积分数量")
+        # 注册消息处理器 - 用于处理所有文本消息
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, combined_text_handler))
+        logger.info("注册消息处理器 - 处理所有文本消息（包括积分数量和签到文字）")
         
         # 注册聊天成员处理器
         # 处理机器人自己的成员状态变化（如被添加到群组或移除）

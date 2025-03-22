@@ -150,27 +150,161 @@ async def edit_checkin_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 从回调数据中提取群组ID
         group_id = int(callback_data.split("_")[3])
         back_callback = f"checkin_rule_{group_id}"
+        logger.info(f"用户正在修改群组 {group_id} 的签到文字")
+    else:
+        logger.info(f"用户正在修改当前聊天的签到文字")
     
-    # 此处应实现修改签到文字的逻辑
-    # 在实际实现中，可能需要进入一个对话状态来接收用户输入的新签到文字
+    # 获取当前签到文字设置
+    chat_id = group_id if group_id else update.effective_chat.id
+    logger.info(f"使用chat_id: {chat_id} 获取签到文字设置")
+    
+    @sync_to_async
+    def get_current_keyword(chat_id):
+        try:
+            group = Group.objects.get(group_id=chat_id)
+            rule, created = PointRule.objects.get_or_create(
+                group=group,
+                defaults={
+                    'checkin_keyword': '签到',
+                    'checkin_points': 0
+                }
+            )
+            logger.info(f"数据库查询结果: 群组={group.group_title}, 签到文字={rule.checkin_keyword}, 新创建={created}")
+            return rule.checkin_keyword, group.group_title
+        except Exception as e:
+            logger.error(f"获取当前签到文字设置时出错: {e}", exc_info=True)
+            return "签到", "未知群组"  # 默认值
+    
     try:
-        await query.edit_message_text(
-            text=f"请输入新的签到文字（功能开发中...）",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Back 返回", callback_data=back_callback)]
-            ])
-        )
+        keyword_info = await get_current_keyword(chat_id)
+        current_keyword, group_title = keyword_info
+        
+        logger.info(f"群组 {group_title} (ID: {chat_id}) 当前签到文字为: {current_keyword}")
+        
+        # 将用户置于等待输入状态
+        context.user_data['waiting_for_checkin_text'] = True
+        context.user_data['chat_id'] = chat_id
+        context.user_data['back_callback'] = back_callback
+        logger.info(f"已设置用户等待状态: waiting_for_checkin_text={True}, chat_id={chat_id}")
+        
+        # 创建界面内容，确保与图2格式一致
+        message_text = f"积分\n\n当前设置:{current_keyword}\n\n👉 输入内容进行设置:"
+        
+        # 创建返回按钮，与图2一致
+        keyboard = [
+            [InlineKeyboardButton("返回", callback_data=back_callback)]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            # 发送提示消息，让用户输入新的签到文字
+            await query.edit_message_text(
+                text=message_text,
+                reply_markup=reply_markup
+            )
+            logger.info(f"已显示签到文字设置界面，等待用户输入")
+            
+        except Exception as e:
+            logger.error(f"编辑消息时出错: {e}", exc_info=True)
+            try:
+                await update.effective_chat.send_message(
+                    text=message_text,
+                    reply_markup=reply_markup
+                )
+                logger.info(f"通过新消息显示签到文字设置界面")
+            except Exception as send_error:
+                logger.error(f"发送新消息也失败: {send_error}", exc_info=True)
+                
     except Exception as e:
-        logger.error(f"编辑消息时出错: {e}")
+        logger.error(f"处理设置签到文字请求时出错: {e}", exc_info=True)
         try:
             await update.effective_chat.send_message(
-                text=f"请输入新的签到文字（功能开发中...）",
+                text="获取签到文字设置时出错，请稍后再试",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("◀️ Back 返回", callback_data=back_callback)]
+                    [InlineKeyboardButton("返回", callback_data=back_callback)]
                 ])
             )
-        except Exception as send_error:
-            logger.error(f"发送新消息也失败: {send_error}")
+        except Exception as msg_error:
+            logger.error(f"发送错误消息失败: {msg_error}")
+
+# 创建一个新函数来处理用户输入的签到文字
+async def handle_checkin_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理用户输入的签到文字"""
+    # 检查用户是否在等待输入签到文字的状态
+    if not context.user_data.get('waiting_for_checkin_text'):
+        logger.debug(f"用户 {update.effective_user.id} 发送了消息，但不在等待输入签到文字状态")
+        return
+    
+    user = update.effective_user
+    text = update.message.text.strip()
+    logger.info(f"用户 {user.id} ({user.full_name}) 正在设置签到文字为: {text}")
+    
+    # 获取群组ID
+    chat_id = context.user_data.get('chat_id')
+    back_callback = context.user_data.get('back_callback')
+    
+    if not chat_id:
+        logger.error("找不到chat_id，用户状态可能已丢失")
+        await update.message.reply_text("操作失败，请重试")
+        return
+    
+    logger.info(f"处理用户输入，将为群组 {chat_id} 设置签到文字: {text}")
+    
+    # 检查签到文字的长度，不能太长
+    if len(text) > 30:
+        logger.warning(f"用户输入的签到文字过长: {len(text)} 字符")
+        await update.message.reply_text("签到文字太长了，请不要超过30个字符")
+        return
+    
+    # 更新数据库
+    @sync_to_async
+    def update_checkin_text(chat_id, text):
+        try:
+            group = Group.objects.get(group_id=chat_id)
+            rule, created = PointRule.objects.get_or_create(
+                group=group,
+                defaults={
+                    'checkin_keyword': '签到',
+                    'checkin_points': 0
+                }
+            )
+            
+            # 记录旧值，便于日志
+            old_keyword = rule.checkin_keyword
+            
+            # 更新签到文字
+            rule.checkin_keyword = text
+            rule.save()
+            
+            logger.info(f"群组 {group.group_title} (ID: {chat_id}) 的签到文字已从 '{old_keyword}' 更新为 '{text}'")
+            return True, group.group_title
+        except Exception as e:
+            logger.error(f"更新签到文字设置时出错: {e}", exc_info=True)
+            return False, "未知群组"
+    
+    result = await update_checkin_text(chat_id, text)
+    success, group_title = result
+    
+    # 重置用户状态
+    context.user_data.pop('waiting_for_checkin_text', None)
+    context.user_data.pop('chat_id', None)
+    context.user_data.pop('back_callback', None)
+    
+    if success:
+        # 发送成功消息
+        keyboard = [
+            [InlineKeyboardButton("返回", callback_data=back_callback)]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        logger.info(f"签到文字设置成功，显示成功消息")
+        await update.message.reply_text(
+            f"✅ 设置成功，点击按钮返回。",
+            reply_markup=reply_markup
+        )
+    else:
+        logger.error(f"签到文字设置失败")
+        await update.message.reply_text("设置失败，请重试")
 
 async def set_checkin_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理设置签到积分数量的请求"""
@@ -230,10 +364,10 @@ async def set_checkin_points(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data['back_callback'] = back_callback
         logger.info(f"已设置用户等待状态: waiting_for_points={True}, chat_id={chat_id}")
         
-        # 创建界面内容，确保与图二格式一致
+        # 创建界面内容，确保与图2格式一致
         message_text = f"积分\n\n当前设置:{current_points}\n\n👉 输入内容进行设置:"
         
-        # 创建返回按钮，与图二一致
+        # 创建返回按钮，与图2一致
         keyboard = [
             [InlineKeyboardButton("返回", callback_data=back_callback)]
         ]

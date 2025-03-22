@@ -38,6 +38,16 @@ from jifen.message_handlers import (
     handle_min_length_input
 )
 
+# 导入邀请规则处理模块
+from jifen.invite_handlers import (
+    show_invite_rule_settings,
+    set_invite_points,
+    set_invite_daily_limit,
+    back_to_invite_rule,
+    handle_invite_points_input,
+    handle_invite_daily_limit_input
+)
+
 # 导入群组处理模块
 from jifen.group_handlers import (
     handle_my_chat_member,
@@ -385,13 +395,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # 返回到发言规则设置
             await back_to_message_rule(update, context)
         elif query.data == "invite_rule":
-            await query.message.reply_text(
-                "邀请规则：\n"
-                "- 邀请新用户加入可获取积分\n"
-                "- 被邀请用户留存时间越长奖励越多\n"
-                "- 恶意邀请将被取消资格\n\n"
-                "此功能正在开发中..."
-            )
+            # 调用jifen/invite_handlers.py中的处理函数
+            await show_invite_rule_settings(update, context)
+        elif query.data == "back_to_invite_rule":
+            # 返回到邀请规则设置
+            await back_to_invite_rule(update, context)
+        elif query.data.startswith("set_invite_points"):
+            # 设置邀请积分数量
+            await set_invite_points(update, context)
+        elif query.data.startswith("set_invite_daily_limit"):
+            # 设置邀请每日上限
+            await set_invite_daily_limit(update, context)
         elif query.data == "raffle_setting":
             await query.message.reply_text(
                 "抽奖设置功能：\n"
@@ -419,28 +433,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # 从回调数据中提取群组ID
             group_id = int(query.data.split("_")[2])
             
-            # 尝试获取群组名称
-            group_name = "未知群组"
-            all_groups = await get_all_active_groups()
-            for gid, gtitle in all_groups:
-                if gid == group_id:
-                    group_name = gtitle
-                    break
-            
-            # 创建返回按钮
-            keyboard = [
-                [InlineKeyboardButton("◀️ 返回积分设置", callback_data=f"points_setting_{group_id}")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await query.edit_message_text(
-                text=f"群组 {group_name} 的邀请规则：\n"
-                "- 邀请新用户加入可获取积分\n"
-                "- 被邀请用户留存时间越长奖励越多\n"
-                "- 恶意邀请将被取消资格\n\n"
-                "此功能正在开发中...",
-                reply_markup=reply_markup
-            )
+            # 调用invitation_handlers.py中的处理函数
+            await show_invite_rule_settings(update, context, group_id)
             
         elif query.data.startswith("raffle_setting_"):
             # 从回调数据中提取群组ID
@@ -492,16 +486,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 组合处理器 - 用于处理所有文本消息
 async def combined_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理所有文本消息，根据用户状态决定调用哪个具体的处理函数"""
-    # 获取用户状态
     user_data = context.user_data
+    logger.info(f"收到来自用户 {update.effective_user.id} 的文本消息")
     
-    # 记录接收到的消息，便于调试
-    user = update.effective_user
-    text = update.message.text
-    logger.info(f"用户 {user.id} ({user.full_name}) 发送消息: {text}")
-    logger.info(f"用户当前状态: {user_data}")
+    # 根据用户状态决定处理方式
+    if not user_data:
+        logger.debug(f"用户 {update.effective_user.id} 没有状态数据")
+        return
     
-    # 根据用户状态调用相应的处理函数
     if user_data.get('waiting_for_checkin_text'):
         logger.info(f"用户处于等待输入签到文字状态，调用handle_checkin_text_input")
         # 确保其他输入状态被清除
@@ -509,14 +501,16 @@ async def combined_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
         user_data.pop('waiting_for_message_points', None)
         user_data.pop('waiting_for_daily_limit', None)
         user_data.pop('waiting_for_min_length', None)
+        user_data.pop('waiting_for_invite_points', None)
         await handle_checkin_text_input(update, context)
     elif user_data.get('waiting_for_points'):
-        logger.info(f"用户处于等待输入积分状态，调用handle_points_input")
+        logger.info(f"用户处于等待输入签到积分状态，调用handle_points_input")
         # 确保其他输入状态被清除
         user_data.pop('waiting_for_checkin_text', None)
         user_data.pop('waiting_for_message_points', None)
         user_data.pop('waiting_for_daily_limit', None)
         user_data.pop('waiting_for_min_length', None)
+        user_data.pop('waiting_for_invite_points', None)
         await handle_points_input(update, context)
     elif user_data.get('waiting_for_message_points'):
         logger.info(f"用户处于等待输入发言积分状态，调用handle_message_points_input")
@@ -525,6 +519,7 @@ async def combined_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
         user_data.pop('waiting_for_points', None)
         user_data.pop('waiting_for_daily_limit', None)
         user_data.pop('waiting_for_min_length', None)
+        user_data.pop('waiting_for_invite_points', None)
         await handle_message_points_input(update, context)
     elif user_data.get('waiting_for_daily_limit'):
         logger.info(f"用户处于等待输入每日上限状态，调用handle_daily_limit_input")
@@ -533,6 +528,7 @@ async def combined_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
         user_data.pop('waiting_for_points', None)
         user_data.pop('waiting_for_message_points', None)
         user_data.pop('waiting_for_min_length', None)
+        user_data.pop('waiting_for_invite_points', None)
         await handle_daily_limit_input(update, context)
     elif user_data.get('waiting_for_min_length'):
         logger.info(f"用户处于等待输入最小字数长度限制状态，调用handle_min_length_input")
@@ -541,7 +537,28 @@ async def combined_text_handler(update: Update, context: ContextTypes.DEFAULT_TY
         user_data.pop('waiting_for_points', None)
         user_data.pop('waiting_for_message_points', None)
         user_data.pop('waiting_for_daily_limit', None)
+        user_data.pop('waiting_for_invite_points', None)
         await handle_min_length_input(update, context)
+    elif user_data.get('waiting_for_invite_points'):
+        logger.info(f"用户处于等待输入邀请积分状态，调用handle_invite_points_input")
+        # 确保其他输入状态被清除
+        user_data.pop('waiting_for_checkin_text', None)
+        user_data.pop('waiting_for_points', None)
+        user_data.pop('waiting_for_message_points', None)
+        user_data.pop('waiting_for_daily_limit', None)
+        user_data.pop('waiting_for_min_length', None)
+        user_data.pop('waiting_for_invite_daily_limit', None)
+        await handle_invite_points_input(update, context)
+    elif user_data.get('waiting_for_invite_daily_limit'):
+        logger.info(f"用户处于等待输入邀请每日上限状态，调用handle_invite_daily_limit_input")
+        # 确保其他输入状态被清除
+        user_data.pop('waiting_for_checkin_text', None)
+        user_data.pop('waiting_for_points', None)
+        user_data.pop('waiting_for_message_points', None)
+        user_data.pop('waiting_for_daily_limit', None)
+        user_data.pop('waiting_for_min_length', None)
+        user_data.pop('waiting_for_invite_points', None)
+        await handle_invite_daily_limit_input(update, context)
     else:
         # 非特定状态下的消息无需处理
         logger.debug(f"用户未处于特定状态，不处理消息")

@@ -79,6 +79,7 @@ class PointRule(models.Model):
     # 邀请规则
     invite_points_enabled = models.BooleanField(default=True, help_text="是否启用邀请积分")
     invite_points = models.IntegerField(default=10, help_text="邀请一人获得积分")
+    invite_daily_limit = models.IntegerField(default=0, help_text="每日邀请积分上限，0表示无限制")
     
     created_at = models.DateTimeField(auto_now_add=True, help_text="创建时间")
     updated_at = models.DateTimeField(auto_now=True, help_text="更新时间")
@@ -324,4 +325,29 @@ class RaffleParticipant(models.Model):
         
     def __str__(self):
         status = "中奖" if self.is_winner else "参与"
-        return f"{self.user} {status} {self.raffle.title}" 
+        return f"{self.user} {status} {self.raffle.title}"
+
+
+class DailyInviteStat(models.Model):
+    """邀请每日统计表"""
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE, help_text="用户ID")
+    group = models.ForeignKey(Group, on_delete=models.CASCADE, help_text="群组ID")
+    invite_date = models.DateField(help_text="统计日期")
+    invite_count = models.IntegerField(default=0, help_text="邀请人数")
+    points_awarded = models.IntegerField(default=0, help_text="获得积分")
+    created_at = models.DateTimeField(auto_now_add=True, help_text="创建时间")
+    updated_at = models.DateTimeField(auto_now=True, help_text="更新时间")
+    
+    class Meta:
+        db_table = 'daily_invite_stats'
+        verbose_name = '邀请每日统计'
+        verbose_name_plural = '邀请每日统计'
+        unique_together = ('user', 'group', 'invite_date')
+        indexes = [
+            models.Index(fields=['user']),
+            models.Index(fields=['group']),
+        ]
+        
+    def __str__(self):
+        return f"{self.user} - {self.invite_date} - {self.invite_count}人" 

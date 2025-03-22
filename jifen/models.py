@@ -74,6 +74,7 @@ class PointRule(models.Model):
     message_points_enabled = models.BooleanField(default=True, help_text="是否启用发言积分")
     message_points = models.IntegerField(default=1, help_text="每条消息获得积分")
     message_daily_limit = models.IntegerField(default=50, help_text="每日发言积分上限")
+    message_min_length = models.IntegerField(default=0, help_text="发言最小字数长度限制，0表示无限制")
     
     # 邀请规则
     invite_points_enabled = models.BooleanField(default=True, help_text="是否启用邀请积分")

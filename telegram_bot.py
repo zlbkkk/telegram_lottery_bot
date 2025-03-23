@@ -48,7 +48,10 @@ from jifen.invite_handlers import (
     set_invite_daily_limit,
     back_to_invite_rule,
     handle_invite_points_input,
-    handle_invite_daily_limit_input
+    handle_invite_daily_limit_input,
+    generate_invite_link,
+    create_group_invite_link,
+    handle_invite_start_parameter
 )
 
 # 导入群组处理模块
@@ -228,6 +231,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"用户 {user.id} ({user.full_name}) 正在私聊中执行 /start 命令")
     
+    # 检查是否有邀请参数
+    if context.args and context.args[0].startswith("invite_"):
+        # 处理邀请链接参数
+        handled = await handle_invite_start_parameter(update, context)
+        if handled:
+            logger.info(f"已处理用户 {user.id} 的邀请链接参数")
+            return
+    
     # 检查是否是从群聊中启动机器人（通过startgroup参数）
     force_refresh = False
     if context.args and 'startgroup' in context.args:
@@ -261,6 +272,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bot_username = context.bot.username
     invite_url = f"https://t.me/{bot_username}?startgroup=true"
     keyboard.append([InlineKeyboardButton("➕ 添加机器人到群组", url=invite_url)])
+    
+    # 添加"生成邀请链接"按钮
+    keyboard.append([InlineKeyboardButton("🔗 生成邀请链接", callback_data="generate_invite")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -297,8 +311,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # 显示菜单
             await show_menu(update, context)
         
+        # 处理生成邀请链接
+        elif query.data == "generate_invite":
+            await generate_invite_link(update, context)
+            
+        # 处理特定群组的邀请链接请求
+        elif query.data.startswith("invite_link_"):
+            await create_group_invite_link(update, context)
+        
         # 处理群组按钮的回调
-        if query.data.startswith("group_"):
+        elif query.data.startswith("group_"):
             group_id = int(query.data.split("_")[1])
             
             # 创建群组特定的菜单
@@ -306,6 +328,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [
                     InlineKeyboardButton("积分设置", callback_data=f"points_setting_{group_id}"),
                     InlineKeyboardButton("抽奖设置", callback_data=f"raffle_setting_{group_id}")
+                ],
+                [
+                    InlineKeyboardButton("🔗 生成邀请链接", callback_data=f"invite_link_{group_id}")
                 ],
                 [
                     InlineKeyboardButton("◀️ 返回群组列表", callback_data="back_to_groups")
@@ -344,6 +369,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bot_username = context.bot.username
             invite_url = f"https://t.me/{bot_username}?startgroup=true"
             keyboard.append([InlineKeyboardButton("➕ 添加机器人到群组", url=invite_url)])
+            
+            # 添加"生成邀请链接"按钮
+            keyboard.append([InlineKeyboardButton("🔗 生成邀请链接", callback_data="generate_invite")])
             
             reply_markup = InlineKeyboardMarkup(keyboard)
             
@@ -593,9 +621,13 @@ def run_bot():
         # 创建应用
         application = ApplicationBuilder().token(TOKEN).build()
         
-        # 只注册start命令处理器
+        # 注册命令处理器
         application.add_handler(CommandHandler("start", start))
         logger.info("注册 /start 命令处理器")
+        
+        # 注册邀请命令处理器
+        application.add_handler(CommandHandler("invite", generate_invite_link))
+        logger.info("注册 /invite 命令处理器")
         
         # 注册回调查询处理器
         application.add_handler(CallbackQueryHandler(button_callback))

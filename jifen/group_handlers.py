@@ -4,7 +4,7 @@ from telegram.ext import ContextTypes
 from django.utils import timezone
 from django.db import transaction
 from asgiref.sync import sync_to_async
-from .models import Group, User
+from .models import Group, User, PointRule, Invite, DailyInviteStat, PointTransaction
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -287,29 +287,29 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
                     else:
                         logger.info(f"Channel {chat.title} ({chat.id}) has been updated in the database")
                     
-                    # 记录添加机器人的用户到该频道的记录
-                    try:
-                        # 假设将添加机器人的用户作为管理员
-                        user_is_admin = True
-                        user, user_created = await save_user_to_group(
-                            cause_user.id,
-                            cause_user.username,
-                            cause_user.first_name,
-                            cause_user.last_name,
-                            group,
-                            user_is_admin
-                        )
+                    # 记录添加机器人的用户
+                    logger.info(f"机器人已加入频道 {chat.title}，由用户 {cause_user.id} ({cause_user.full_name}) 添加")
+                    
+                    # 假设将添加机器人的用户作为管理员
+                    user_is_admin = True
+                    user, user_created = await save_user_to_group(
+                        cause_user.id,
+                        cause_user.username,
+                        cause_user.first_name,
+                        cause_user.last_name,
+                        group,
+                        user_is_admin
+                    )
+                    
+                    if user_created:
+                        logger.info(f"创建了用户 {cause_user.full_name} 在频道 {chat.title} 的记录")
+                    else:
+                        logger.info(f"更新了用户 {cause_user.full_name} 在频道 {chat.title} 的记录")
                         
-                        if user_created:
-                            logger.info(f"创建了用户 {cause_user.full_name} 在频道 {chat.title} 的记录")
-                        else:
-                            logger.info(f"更新了用户 {cause_user.full_name} 在频道 {chat.title} 的记录")
-                            
-                        # 清除该用户的群组缓存，确保立即能看到新频道
-                        clear_user_groups_cache(cause_user.id)
-                        logger.info(f"已清除用户 {cause_user.id} 的群组缓存，新频道将立即可见")
-                    except Exception as e:
-                        logger.error(f"将用户添加到频道记录时出错: {e}")
+                    # 清除该用户的群组缓存，确保立即能看到新频道
+                    clear_user_groups_cache(cause_user.id)
+                    logger.info(f"已清除用户 {cause_user.id} 的群组缓存，新频道将立即可见")
+                    
                 except Exception as e:
                     logger.error(f"Error saving channel to database: {e}")
             
@@ -382,10 +382,114 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 # 清除该用户的群组缓存，确保立即能看到新群组
                 clear_user_groups_cache(member_user.id)
                 logger.info(f"已清除用户 {member_user.id} 的群组缓存，新群组将立即可见")
+                
+                # 处理邀请积分
+                # 情况1: 某人直接邀请另一个人进群 (cause_user ≠ member_user)
+                # 情况2: 用户通过邀请链接加入 (cause_user = member_user)，需要检查链接来源
+                
+                inviter_id = None
+                invitation_type = None
+                
+                if cause_user.id != member_user.id:
+                    # 直接邀请的情况
+                    inviter_id = cause_user.id
+                    invitation_type = "直接邀请"
+                    logger.info(f"用户 {member_user.full_name} 是由 {cause_user.full_name} 直接邀请加入群组的")
+                else:
+                    # 可能是通过邀请链接加入
+                    # 检查用户是否是通过邀请链接加入
+                    if hasattr(update.effective_chat, 'invite_link') and update.effective_chat.invite_link:
+                        invite_link = update.effective_chat.invite_link
+                        logger.info(f"检测到邀请链接: {invite_link}")
+                        
+                        # 从邀请链接中提取创建者ID (如果可用)
+                        if hasattr(invite_link, 'creator') and invite_link.creator:
+                            inviter_id = invite_link.creator.id
+                            invitation_type = "邀请链接"
+                            logger.info(f"用户 {member_user.full_name} 是通过由 {invite_link.creator.full_name} 创建的邀请链接加入的")
+                
+                # 检查标准Telegram邀请链接 (t.me/+...)
+                if not inviter_id:
+                    try:
+                        # 尝试获取该群组的所有邀请链接并查找最近创建的链接
+                        recent_invite_links = await context.bot.get_chat_administrators(chat.id)
+                        logger.info(f"获取群组管理员列表，找到 {len(recent_invite_links)} 个管理员")
+                        
+                        # 在管理员中寻找最近活跃的一个作为可能的邀请人
+                        for admin in recent_invite_links:
+                            if admin.user.id != context.bot.id:  # 排除机器人自己
+                                inviter_id = admin.user.id
+                                invitation_type = "最近活跃管理员邀请"
+                                logger.info(f"使用最近活跃的管理员 {admin.user.full_name} (ID: {admin.user.id}) 作为可能的邀请人")
+                                break
+                    except Exception as e:
+                        logger.error(f"尝试获取群组邀请链接时出错: {e}", exc_info=True)
+                
+                # 如果还没找到邀请人，检查群组创建者或第一个管理员
+                if not inviter_id:
+                    try:
+                        # 获取群组信息，查找群组创建者
+                        chat_info = await context.bot.get_chat(chat.id)
+                        if hasattr(chat_info, 'permissions') and chat_info.permissions:
+                            # 尝试找到群组创建者或所有者
+                            logger.info(f"尝试找到群组创建者或所有者")
+                            admins = await context.bot.get_chat_administrators(chat.id)
+                            for admin in admins:
+                                if admin.status == 'creator':
+                                    inviter_id = admin.user.id
+                                    invitation_type = "群组创建者"
+                                    logger.info(f"使用群组创建者 {admin.user.full_name} (ID: {admin.user.id}) 作为默认邀请人")
+                                    break
+                            
+                            # 如果没找到创建者，使用第一个管理员
+                            if not inviter_id and admins:
+                                inviter_id = admins[0].user.id
+                                invitation_type = "群组管理员"
+                                logger.info(f"使用群组管理员 {admins[0].user.full_name} (ID: {admins[0].user.id}) 作为默认邀请人")
+                    except Exception as e:
+                        logger.error(f"尝试获取群组信息时出错: {e}", exc_info=True)
+                
+                # 检查referral字段，查看是否包含了邀请者信息
+                if not inviter_id and context.bot_data.get("pending_invites"):
+                    for invite_code, invite_data in context.bot_data["pending_invites"].items():
+                        if invite_data.get("user_id") == member_user.id and invite_data.get("group_id") == chat.id:
+                            inviter_id = invite_data.get("inviter_id")
+                            invitation_type = "追踪链接"
+                            logger.info(f"从追踪链接中找到邀请关系: {invite_data.get('inviter_name')} 邀请了 {member_user.full_name}")
+                            break
+                
+                # 如果找到了邀请人，处理邀请积分
+                if inviter_id:
+                    logger.info(f"开始处理邀请积分 ({invitation_type}): 邀请人ID={inviter_id}, 受邀人ID={member_user.id}")
+                    
+                    # 执行邀请积分处理
+                    logger.info(f"开始处理邀请积分: 邀请人={inviter_id}, 被邀请人={member_user.id}")
+                    
+                    # 尝试获取邀请人信息，供内部函数使用
+                    inviter_info = None
+                    try:
+                        inviter_info = await context.bot.get_chat_member(chat.id, inviter_id)
+                        logger.info(f"获取到邀请人信息: {inviter_info.user.full_name}")
+                    except Exception as e:
+                        logger.warning(f"获取邀请人信息失败: {e}")
+                    
+                    # 异步处理邀请积分
+                    success, points_awarded = await process_invite_points(inviter_id, member_user.id, group, inviter_info)
+                    
+                    if success:
+                        logger.info(f"邀请积分处理成功，邀请人 {inviter_id} 获得 {points_awarded} 积分")
+                    else:
+                        logger.info("邀请积分处理未成功，可能是规则限制或已存在记录")
+                    
+                    # 清除邀请人的群组缓存，确保积分变更立即可见
+                    clear_user_groups_cache(inviter_id)
+                else:
+                    logger.info(f"未找到邀请人信息，无法处理邀请积分。这可能是用户自己加入群组的情况。")
+                    
             else:
                 logger.warning(f"找不到群组记录: {chat.id} - {chat.title}")
         except Exception as e:
-            logger.error(f"处理用户加入群组时出错: {e}")
+            logger.error(f"处理用户加入群组时出错: {e}", exc_info=True)
     
     # 用户离开群组
     elif was_member and not is_member:
@@ -409,3 +513,133 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 logger.info(f"已清除用户 {member_user.id} 的群组缓存，群组列表将立即更新")
         except Exception as e:
             logger.error(f"处理用户离开群组时出错: {e}") 
+
+# 异步处理邀请积分
+@sync_to_async
+def process_invite_points(inviter_id, invitee_id, group, inviter_info=None):
+    from django.db import transaction
+    from django.utils import timezone
+    from .models import PointRule, User, Invite, DailyInviteStat, PointTransaction
+    
+    try:
+        with transaction.atomic():
+            # 获取邀请人信息
+            inviter = User.objects.filter(
+                telegram_id=inviter_id,
+                group=group,
+                is_active=True
+            ).first()
+            
+            if not inviter:
+                logger.warning(f"邀请人 {inviter_id} 在群组 {group.group_id} 中不存在或非活跃")
+                
+                # 尝试创建邀请人记录（如果不存在且有信息）
+                if inviter_info:
+                    try:
+                        # 创建用户记录
+                        member_info = inviter_info
+                        inviter = User.objects.create(
+                            telegram_id=inviter_id,
+                            username=member_info.user.username,
+                            first_name=member_info.user.first_name,
+                            last_name=member_info.user.last_name,
+                            group=group,
+                            is_active=True,
+                            is_admin=member_info.status in ['administrator', 'creator']
+                        )
+                        logger.info(f"为邀请人 {inviter_id} 创建了新记录")
+                    except Exception as e:
+                        logger.error(f"创建邀请人记录失败: {e}")
+                        return False, 0
+                else:
+                    logger.error(f"没有邀请人信息，无法创建记录")
+                    return False, 0
+            
+            # 获取被邀请人信息
+            invitee = User.objects.filter(
+                telegram_id=invitee_id,
+                group=group,
+                is_active=True
+            ).first()
+            
+            if not invitee:
+                logger.warning(f"被邀请人 {invitee_id} 在群组 {group.group_id} 中不存在或非活跃")
+                return False, 0
+            
+            # 检查群组积分规则
+            rule = PointRule.objects.filter(group=group).first()
+            if not rule or not rule.points_enabled:
+                logger.info(f"群组 {group.group_id} 未设置积分规则或积分功能已关闭")
+                return False, 0
+            
+            # 获取今天的日期
+            today = timezone.now().date()
+            
+            # 检查是否已经存在邀请记录
+            if Invite.objects.filter(inviter=inviter, invitee=invitee, group=group).exists():
+                logger.info(f"已存在邀请记录：{inviter.telegram_id} 邀请 {invitee.telegram_id}")
+                return False, 0
+            
+            # 获取邀请人今日已获得的邀请积分
+            daily_stat = DailyInviteStat.objects.filter(
+                user=inviter,
+                group=group,
+                invite_date=today
+            ).first()
+            
+            # 如果没有今日记录，创建一个
+            if not daily_stat:
+                daily_stat = DailyInviteStat(
+                    user=inviter,
+                    group=group,
+                    invite_date=today,
+                    invite_count=0,
+                    points_awarded=0
+                )
+            
+            # 检查是否达到每日上限
+            # invite_points: 每邀请一个用户获得的积分
+            # invite_daily_limit: 每日邀请用户的次数上限
+            points_to_award = rule.invite_points  # 每次邀请获得的固定积分值
+            if rule.invite_daily_limit > 0:
+                if daily_stat.invite_count >= rule.invite_daily_limit:
+                    logger.info(f"用户 {inviter.telegram_id} 在群组 {group.group_id} 中已达到每日邀请次数上限 {rule.invite_daily_limit}")
+                    return False, 0
+                
+                logger.info(f"今日已邀请次数: {daily_stat.invite_count}, 上限: {rule.invite_daily_limit}, 本次将获得: {points_to_award} 积分")
+            
+            # 创建邀请记录
+            invite = Invite(
+                inviter=inviter,
+                invitee=invitee,
+                group=group,
+                points_awarded=points_to_award,
+                invite_date=today
+            )
+            invite.save()
+            
+            # 更新邀请人积分
+            old_points = inviter.points
+            inviter.points += points_to_award
+            inviter.save()
+            
+            # 更新每日邀请统计
+            daily_stat.invite_count += 1
+            daily_stat.points_awarded += points_to_award
+            daily_stat.save()
+            
+            # 创建积分变动记录
+            PointTransaction.objects.create(
+                user=inviter,
+                group=group,
+                amount=points_to_award,
+                type='INVITE',
+                description=f"邀请用户 {invitee.first_name or ''} {invitee.last_name or ''} 获得 {points_to_award} 积分",
+                transaction_date=today
+            )
+            
+            logger.info(f"用户 {inviter.telegram_id} 邀请 {invitee.telegram_id} 到群组 {group.group_id} 获得 {points_to_award} 积分")
+            return True, points_to_award
+    except Exception as e:
+        logger.error(f"处理邀请积分时出错: {e}", exc_info=True)
+        return False, 0 

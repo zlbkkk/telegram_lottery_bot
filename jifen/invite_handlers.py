@@ -1,4 +1,5 @@
 import logging
+import uuid
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
 from django.utils import timezone
@@ -549,4 +550,217 @@ async def handle_invite_daily_limit_input(update: Update, context: ContextTypes.
                 [InlineKeyboardButton("返回", callback_data=back_callback)]
             ])
         )
-        context.user_data.clear() 
+        context.user_data.clear()
+
+# 添加邀请链接生成功能
+async def generate_invite_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """生成带有邀请者信息的邀请链接"""
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    logger.info(f"用户 {user.id} ({user.full_name}) 请求生成邀请链接")
+    
+    # 获取群组列表
+    @sync_to_async
+    def get_user_active_groups(user_id):
+        from .models import User, Group
+        
+        try:
+            # 获取用户加入的所有活跃群组
+            groups = Group.objects.filter(
+                user__telegram_id=user_id,
+                user__is_active=True,
+                is_active=True
+            ).distinct()
+            
+            return [(group.group_id, group.group_title) for group in groups]
+        except Exception as e:
+            logger.error(f"获取用户群组时出错: {e}", exc_info=True)
+            return []
+    
+    # 获取用户的群组列表
+    groups = await get_user_active_groups(user.id)
+    
+    if not groups:
+        await update.message.reply_text("你尚未加入任何群组，或者你加入的群组中没有这个机器人。")
+        return
+    
+    # 如果在私聊中，显示群组选择
+    if chat.type == 'private':
+        if len(groups) == 1:
+            # 只有一个群组，直接生成邀请链接
+            group_id, group_title = groups[0]
+            return await create_group_invite_link(update, context, group_id, group_title)
+        else:
+            # 多个群组，让用户选择
+            keyboard = []
+            for group_id, group_title in groups:
+                button = InlineKeyboardButton(
+                    text=group_title,
+                    callback_data=f"invite_link_{group_id}"
+                )
+                keyboard.append([button])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(
+                "请选择要生成邀请链接的群组：",
+                reply_markup=reply_markup
+            )
+            return
+    else:
+        # 在群组中，直接生成当前群组的邀请链接
+        return await create_group_invite_link(update, context, chat.id, chat.title)
+
+async def create_group_invite_link(update: Update, context: ContextTypes.DEFAULT_TYPE, group_id=None, group_title=None):
+    """为指定群组创建邀请链接"""
+    user = update.effective_user
+    query = update.callback_query
+    
+    # 如果是通过回调查询触发的
+    if query:
+        await query.answer()
+        # 从回调数据中提取群组ID
+        if query.data.startswith("invite_link_"):
+            group_id = int(query.data.split("_")[2])
+            # 获取群组标题
+            @sync_to_async
+            def get_group_title(group_id):
+                from .models import Group
+                group = Group.objects.filter(group_id=group_id, is_active=True).first()
+                return group.group_title if group else "未知群组"
+            
+            group_title = await get_group_title(group_id)
+    
+    logger.info(f"为用户 {user.id} ({user.full_name}) 生成群组 {group_id} ({group_title}) 的邀请链接")
+    
+    try:
+        # 检查用户权限
+        chat = await context.bot.get_chat(group_id)
+        member = await chat.get_member(user.id)
+        
+        # 检查机器人权限
+        bot_member = await chat.get_member(context.bot.id)
+        if not bot_member.can_invite_users:
+            message = "抱歉，我没有邀请用户的权限。请联系群组管理员给我添加'邀请用户'权限。"
+            if query:
+                await query.edit_message_text(message)
+            else:
+                await update.message.reply_text(message)
+            return
+        
+        # 创建邀请链接
+        # 生成唯一的跟踪码
+        track_code = str(uuid.uuid4())[:8]
+        
+        # 初始化bot_data的pending_invites字典
+        if "pending_invites" not in context.bot_data:
+            context.bot_data["pending_invites"] = {}
+        
+        # 存储邀请信息
+        context.bot_data["pending_invites"][track_code] = {
+            "inviter_id": user.id,
+            "inviter_name": user.full_name,
+            "group_id": group_id,
+            "group_title": group_title,
+            "created_at": timezone.now().isoformat()
+        }
+        
+        # 创建邀请链接
+        try:
+            # 尝试创建有限期的邀请链接
+            invite_link = await chat.create_invite_link(
+                name=f"{user.full_name}的邀请",
+                creates_join_request=False
+            )
+            link_url = invite_link.invite_link
+        except Exception as e:
+            logger.error(f"创建邀请链接失败: {e}", exc_info=True)
+            # 回退到常规邀请链接
+            link_url = await chat.export_invite_link()
+        
+        # 构建带有追踪的完整邀请链接
+        bot_username = context.bot.username
+        tracked_url = f"{link_url}?start=invite_{track_code}"
+        
+        # 构建消息文本
+        message_text = (
+            f"🎯 你的邀请链接已生成!\n\n"
+            f"📱 群组: {group_title}\n"
+            f"🔗 链接: {tracked_url}\n\n"
+            f"使用此链接邀请好友加入，当他们加入群组后，你将获得积分奖励！"
+        )
+        
+        # 发送消息
+        if query:
+            await query.edit_message_text(
+                text=message_text,
+                disable_web_page_preview=True
+            )
+        else:
+            await update.message.reply_text(
+                text=message_text,
+                disable_web_page_preview=True
+            )
+        
+        logger.info(f"成功为用户 {user.id} 生成邀请链接，跟踪码: {track_code}")
+        
+    except Exception as e:
+        logger.error(f"生成邀请链接时出错: {e}", exc_info=True)
+        error_message = "生成邀请链接时出错，请稍后再试。"
+        if query:
+            await query.edit_message_text(error_message)
+        else:
+            await update.message.reply_text(error_message)
+
+# 处理开始命令中的邀请参数
+async def handle_invite_start_parameter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理带有邀请参数的/start命令"""
+    user = update.effective_user
+    
+    # 检查是否有start参数
+    if not context.args or not context.args[0].startswith("invite_"):
+        return False
+    
+    # 提取邀请码
+    invite_code = context.args[0].replace("invite_", "")
+    logger.info(f"用户 {user.id} ({user.full_name}) 通过邀请链接 {invite_code} 启动机器人")
+    
+    # 检查邀请码是否有效
+    if "pending_invites" in context.bot_data and invite_code in context.bot_data["pending_invites"]:
+        invite_data = context.bot_data["pending_invites"][invite_code]
+        
+        # 记录邀请关系
+        logger.info(f"找到邀请关系: {invite_data['inviter_name']} 邀请了 {user.full_name}")
+        
+        # 更新邀请数据，添加被邀请人信息
+        invite_data["user_id"] = user.id
+        invite_data["user_name"] = user.full_name
+        invite_data["joined_at"] = timezone.now().isoformat()
+        
+        # 保存更新后的数据
+        context.bot_data["pending_invites"][invite_code] = invite_data
+        
+        # 发送欢迎消息
+        group_title = invite_data.get("group_title", "群组")
+        inviter_name = invite_data.get("inviter_name", "用户")
+        
+        welcome_message = (
+            f"欢迎你，{user.full_name}！\n\n"
+            f"你是通过 {inviter_name} 的邀请链接加入的。\n"
+            f"请点击下方按钮加入 {group_title}。"
+        )
+        
+        # 创建加入群组的按钮
+        keyboard = [
+            [InlineKeyboardButton(f"加入 {group_title}", url=f"https://t.me/+{invite_data['group_id']}", callback_data=f"join_group_{invite_data['group_id']}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            welcome_message,
+            reply_markup=reply_markup
+        )
+        
+        return True
+    
+    return False 

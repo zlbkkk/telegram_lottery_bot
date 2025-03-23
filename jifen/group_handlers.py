@@ -223,7 +223,8 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
                     except Exception as e:
                         logger.error(f"将用户添加到群组记录时出错: {e}")
                         
-                    # 不发送欢迎消息
+                    # 不发送任何欢迎消息，让用户自行在私聊中启动机器人
+                    logger.info(f"机器人已加入群组 {chat.title}，保持静默，不发送任何消息")
                 except Exception as e:
                     logger.error(f"Error saving group to database: {e}")
             
@@ -303,6 +304,10 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
                             logger.info(f"创建了用户 {cause_user.full_name} 在频道 {chat.title} 的记录")
                         else:
                             logger.info(f"更新了用户 {cause_user.full_name} 在频道 {chat.title} 的记录")
+                            
+                        # 清除该用户的群组缓存，确保立即能看到新频道
+                        clear_user_groups_cache(cause_user.id)
+                        logger.info(f"已清除用户 {cause_user.id} 的群组缓存，新频道将立即可见")
                     except Exception as e:
                         logger.error(f"将用户添加到频道记录时出错: {e}")
                 except Exception as e:
@@ -317,6 +322,10 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
                     success = await mark_group_inactive(chat.id)
                     if success:
                         logger.info(f"Channel {chat.title} ({chat.id}) has been marked as inactive")
+                        
+                        # 清除该用户的群组缓存，确保立即更新群组列表
+                        clear_user_groups_cache(cause_user.id)
+                        logger.info(f"已清除用户 {cause_user.id} 的群组缓存，群组列表将立即更新")
                 except Exception as e:
                     logger.error(f"Error updating channel status in database: {e}")
 

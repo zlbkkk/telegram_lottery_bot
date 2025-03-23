@@ -213,8 +213,13 @@ async def clear_all_commands_and_set_start(bot):
 # start命令处理函数
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """发送start菜单，显示用户加入的群组和添加机器人到新群组的按钮"""
+    # 检查消息是否来自私聊，如果不是，则不发送欢迎消息
+    if update.effective_chat.type != 'private':
+        logger.info(f"收到非私聊的/start命令，忽略处理")
+        return
+        
     user = update.effective_user
-    logger.info(f"用户 {user.id} ({user.full_name}) 正在执行 /start 命令")
+    logger.info(f"用户 {user.id} ({user.full_name}) 正在私聊中执行 /start 命令")
     
     # 检查是否是从群聊中启动机器人（通过startgroup参数）
     force_refresh = False
@@ -223,16 +228,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"用户 {user.id} 通过startgroup参数启动机器人，将强制刷新群组数据")
     
     # 只在私聊中设置菜单按钮，减少不必要的API调用
-    if update.effective_chat.type == 'private':
-        try:
-            # 明确地设置当前聊天的菜单按钮为默认菜单，保持左下角的Menu按钮
-            await context.bot.set_chat_menu_button(
-                chat_id=update.effective_chat.id,
-                menu_button=MenuButtonDefault()
-            )
-            logger.info(f"为用户 {user.id} 设置了菜单按钮")
-        except Exception as e:
-            logger.warning(f"设置菜单按钮失败: {e}")
+    try:
+        # 明确地设置当前聊天的菜单按钮为默认菜单，保持左下角的Menu按钮
+        await context.bot.set_chat_menu_button(
+            chat_id=update.effective_chat.id,
+            menu_button=MenuButtonDefault()
+        )
+        logger.info(f"为用户 {user.id} 设置了菜单按钮")
+    except Exception as e:
+        logger.warning(f"设置菜单按钮失败: {e}")
     
     # 获取用户所在的群组列表，如果是从群组启动，强制刷新缓存
     user_groups = await get_user_active_groups(user.id, force_refresh=force_refresh)

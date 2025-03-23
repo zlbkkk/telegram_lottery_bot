@@ -1,9 +1,10 @@
 import logging
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, Chat
 from telegram.ext import ContextTypes
 from django.utils import timezone
 from asgiref.sync import sync_to_async
-from .models import Group, PointRule
+from .models import Group, PointRule, CheckIn, PointTransaction, User
+from django.db import transaction
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -591,4 +592,108 @@ async def back_to_checkin_rule(update: Update, context: ContextTypes.DEFAULT_TYP
         group_id = int(callback_data.split("_")[2])
     
     # 返回到签到规则设置菜单
-    await show_checkin_rule_settings(update, context, group_id, query) 
+    await show_checkin_rule_settings(update, context, group_id, query)
+
+async def process_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    处理群聊中的消息，检查是否包含签到关键词，并更新用户积分
+    """
+    # 跳过非文本消息
+    if not update.message or not update.message.text:
+        return
+    
+    # 跳过非群组消息
+    chat = update.effective_chat
+    if chat.type not in [Chat.GROUP, Chat.SUPERGROUP]:
+        return
+    
+    # 获取消息内容和发送者
+    text = update.message.text.strip()
+    user = update.effective_user
+    chat_id = chat.id
+    
+    logger.info(f"处理群组 {chat_id} 中用户 {user.id} ({user.full_name}) 的消息: {text}")
+    
+    try:
+        # 检查是否为签到关键词
+        @sync_to_async
+        def check_checkin_keyword(chat_id, user_id, text):
+            try:
+                # 获取群组对象
+                group = Group.objects.get(group_id=chat_id, is_active=True)
+                
+                # 获取该群组的签到规则
+                rule = PointRule.objects.filter(group=group).first()
+                if not rule or not rule.points_enabled:
+                    logger.debug(f"群组 {chat_id} 未设置签到规则或积分功能已关闭")
+                    return None, None, None
+                
+                # 检查消息是否与签到关键词匹配
+                if text != rule.checkin_keyword:
+                    logger.debug(f"消息 '{text}' 与签到关键词 '{rule.checkin_keyword}' 不匹配")
+                    return None, None, None
+                
+                # 获取用户对象
+                user_obj = User.objects.filter(telegram_id=user_id, group=group, is_active=True).first()
+                if not user_obj:
+                    logger.warning(f"用户 {user_id} 在群组 {chat_id} 中不存在或非活跃")
+                    return None, None, None
+                
+                # 检查今天是否已经签到过
+                today = timezone.now().date()
+                existing_checkin = CheckIn.objects.filter(
+                    user=user_obj,
+                    group=group,
+                    checkin_date=today
+                ).first()
+                
+                if existing_checkin:
+                    logger.info(f"用户 {user_id} 今天已经在群组 {chat_id} 中签到过了")
+                    return group, user_obj, None
+                
+                # 创建签到记录并更新用户积分
+                with transaction.atomic():
+                    # 创建签到记录
+                    checkin = CheckIn.objects.create(
+                        user=user_obj,
+                        group=group,
+                        points_awarded=rule.checkin_points,
+                        checkin_date=today
+                    )
+                    
+                    # 更新用户积分
+                    user_obj.points += rule.checkin_points
+                    user_obj.save()
+                    
+                    # 创建积分变动记录
+                    PointTransaction.objects.create(
+                        user=user_obj,
+                        group=group,
+                        amount=rule.checkin_points,
+                        type='CHECKIN',
+                        description=f"签到获得 {rule.checkin_points} 积分",
+                        transaction_date=today
+                    )
+                    
+                    logger.info(f"用户 {user_id} 在群组 {chat_id} 签到成功，获得 {rule.checkin_points} 积分")
+                    return group, user_obj, rule.checkin_points
+            except Exception as e:
+                logger.error(f"处理签到消息时出错: {e}", exc_info=True)
+                return None, None, None
+        
+        # 执行签到检查
+        group, user_obj, points_awarded = await check_checkin_keyword(chat_id, user.id, text)
+        
+        # 如果签到成功
+        if group and user_obj and points_awarded:
+            # 发送签到成功提示
+            await update.message.reply_text(
+                f"✅ {user.full_name} 签到成功！获得 {points_awarded} 积分，当前总积分: {user_obj.points}"
+            )
+        # 如果已经签到过
+        elif group and user_obj:
+            await update.message.reply_text(
+                f"您已经签到了"
+            )
+    except Exception as e:
+        logger.error(f"处理签到消息时出错: {e}", exc_info=True) 

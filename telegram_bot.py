@@ -24,7 +24,8 @@ from jifen.checkin_handlers import (
     back_to_points_setting,
     back_to_checkin_rule,
     handle_points_input,
-    handle_checkin_text_input
+    handle_checkin_text_input,
+    process_group_message
 )
 
 # 导入发言规则处理模块
@@ -598,6 +599,10 @@ def run_bot():
         # 注册回调查询处理器
         application.add_handler(CallbackQueryHandler(button_callback))
         logger.info("注册按钮回调处理器")
+        
+        # 注册签到消息处理器 - 用于处理群组中的签到消息
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, process_group_message))
+        logger.info("注册签到消息处理器 - 处理群组中的签到消息")
         
         # 注册消息处理器 - 用于处理所有文本消息
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, combined_text_handler))

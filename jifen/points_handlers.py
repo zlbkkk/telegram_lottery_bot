@@ -123,7 +123,7 @@ async def show_points_settings(update: Update, context: ContextTypes.DEFAULT_TYP
         # 使用try-except块包装消息编辑操作
         try:
             await query.edit_message_text(
-                text=f"获取群组 {chat_id} 的积分规则时出错，请稍后再试",
+                text=f"获取群组 {chat_id} 的积分规则时出错了，请稍后再试",
                 reply_markup=reply_markup
             )
         except Exception as edit_error:

@@ -400,9 +400,9 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 await sync_to_async(User.objects.filter(
                     telegram_id=member_user.id,
                     group__group_id=chat.id
-                ).update)(is_active=False)
+                ).update)(is_active=False, is_admin=False)
                 
-                logger.info(f"用户 {member_user.id} ({member_user.full_name}) 已被标记为在群组 {chat.id} 中非活跃")
+                logger.info(f"用户 {member_user.id} ({member_user.full_name}) 已被标记为在群组 {chat.id} 中非活跃且非管理员")
                 
                 # 清除该用户的群组缓存，确保立即更新显示
                 clear_user_groups_cache(member_user.id)

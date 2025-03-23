@@ -35,14 +35,14 @@ async def show_checkin_rule_settings(update: Update, context: ContextTypes.DEFAU
         chat_id = update.effective_chat.id
         logger.info(f"使用当前聊天ID: {chat_id}")
     
-    # 创建两个按钮：修改签到文字、设置获取数量
+    # 创建键盘按钮
     keyboard = [
         [
             InlineKeyboardButton("🔧 修改签到文字", callback_data=f"edit_checkin_text_{chat_id}" if group_id else "edit_checkin_text"),
             InlineKeyboardButton("🔧 设置获得数量", callback_data=f"set_checkin_points_{chat_id}" if group_id else "set_checkin_points")
         ],
         [
-            InlineKeyboardButton("◀️ Back 返回", callback_data=back_button_callback)
+            InlineKeyboardButton("◀️ 返回", callback_data=back_button_callback)
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -73,7 +73,8 @@ async def show_checkin_rule_settings(update: Update, context: ContextTypes.DEFAU
             # 显示当前签到规则
             message_text = (
                 f"群组 {group_title} 的积分设置\n\n"
-                f"签到积分规则: 发送 \"{rule.checkin_keyword}\"，每日签到获得 {rule.checkin_points} 积分"
+                f"签到规则: 发送 \"{rule.checkin_keyword}\"，每日签到获得 {rule.checkin_points} 积分\n"
+                f"当前状态: {'✅ 已启用' if rule.points_enabled else '❌ 已关闭'}"
             )
             
             # 使用try-except块包装消息编辑操作
@@ -365,7 +366,7 @@ async def set_checkin_points(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.info(f"已设置用户等待状态: waiting_for_points={True}, chat_id={chat_id}")
         
         # 创建界面内容，确保与图2格式一致
-        message_text = f"积分\n\n当前设置:{current_points}\n\n👉 输入内容进行设置:"
+        message_text = f"签到积分\n\n当前设置:{current_points}\n\n👉 输入内容进行设置:"
         
         # 创建返回按钮，与图2一致
         keyboard = [

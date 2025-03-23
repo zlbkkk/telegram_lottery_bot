@@ -59,6 +59,11 @@ from jifen.group_handlers import (
 # 导入需要的模型
 from jifen.models import Group, User
 
+# 导入新的 points_handlers 模块中的函数
+from jifen.points_handlers import (
+    show_points_settings, enable_points, disable_points
+)
+
 # 设置日志
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -277,41 +282,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理按钮回调"""
     query = update.callback_query
-    
-    # 记录用户点击按钮的日志
     user = update.effective_user
-    button_data = query.data
-    logger.info(f"用户 {user.id} ({user.full_name}) 正在点击 {button_data} 按钮")
+    
+    logger.info(f"用户 {user.id} ({user.full_name}) 点击了按钮，数据: {query.data}")
     
     try:
-        # 使用try-except块包裹查询回答操作
-        await query.answer()  # 必须回答回调查询
-    except Exception as e:
-        logger.warning(f"回答回调查询时发生错误: {e}")
-        # 回调查询可能已超时，但我们可以继续处理
-    
-    # 确保在按钮点击后也保持Menu按钮可见
-    try:
-        await context.bot.set_chat_menu_button(
-            chat_id=update.effective_chat.id,
-            menu_button=MenuButtonDefault()
-        )
-    except Exception as e:
-        logger.warning(f"在按钮回调中设置菜单按钮失败: {e}")
-    
-    # 根据回调数据处理不同的按钮
-    try:
-        # 直接处理签到积分设置按钮
-        if query.data.startswith("set_checkin_points"):
-            logger.info(f"直接调用set_checkin_points函数处理按钮点击: {query.data}")
-            await set_checkin_points(update, context)
-            return
-            
-        # 直接处理修改签到文字按钮
-        if query.data.startswith("edit_checkin_text"):
-            logger.info(f"直接调用edit_checkin_text函数处理按钮点击: {query.data}")
-            await edit_checkin_text(update, context)
-            return
+        # 先回复查询以避免Telegram超时错误
+        await query.answer()
+        
+        # 根据回调数据分别处理
+        if query.data == "menu":
+            # 显示菜单
+            await show_menu(update, context)
         
         # 处理群组按钮的回调
         if query.data.startswith("group_"):
@@ -384,53 +366,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # 从回调数据中提取群组ID
             group_id = int(query.data.split("_")[2])
             
-            # 创建三个按钮：签到规则、发言规则、邀请规则
-            keyboard = [
-                [
-                    InlineKeyboardButton("🔧 签到规则", callback_data=f"checkin_rule_{group_id}"),
-                    InlineKeyboardButton("🔧 发言规则", callback_data=f"message_rule_{group_id}"),
-                    InlineKeyboardButton("🔧 邀请规则", callback_data=f"invite_rule_{group_id}")
-                ],
-                [
-                    InlineKeyboardButton("◀️ 返回群组设置", callback_data=f"group_{group_id}")
-                ]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            # 尝试获取群组名称
-            group_name = "未知群组"
-            all_groups = await get_all_active_groups()
-            for gid, gtitle in all_groups:
-                if gid == group_id:
-                    group_name = gtitle
-                    break
-            
-            await query.edit_message_text(
-                text=f"您正在管理 {group_name} 的积分规则设置。请选择要查看的积分规则：",
-                reply_markup=reply_markup
-            )
-            
-        elif query.data == "points_setting":
-            # 创建三个按钮：签到规则、发言规则、邀请规则
-            keyboard = [
-                [
-                    InlineKeyboardButton("🔧 签到规则", callback_data="checkin_rule"),
-                    InlineKeyboardButton("🔧 发言规则", callback_data="message_rule"),
-                    InlineKeyboardButton("🔧 邀请规则", callback_data="invite_rule")
-                ],
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await query.edit_message_text(
-                text="请选择要查看的积分规则：",
-                reply_markup=reply_markup
-            )
+            # 为特定群组显示积分总设置页面
+            await show_points_settings(update, context, group_id, query)
         elif query.data == "checkin_rule":
             # 调用jifen/checkin_handlers.py中的处理函数
             await show_checkin_rule_settings(update, context)
         elif query.data == "back_to_points_setting":
             # 返回到积分设置主菜单
-            await back_to_points_setting(update, context)
+            await show_points_settings(update, context)
         elif query.data == "back_to_checkin_rule":
             # 返回到签到规则设置
             await back_to_checkin_rule(update, context)
@@ -452,7 +395,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data.startswith("set_invite_daily_limit"):
             # 设置邀请每日上限
             await set_invite_daily_limit(update, context)
-        elif query.data == "raffle_setting":
+        elif query.data.startswith("raffle_setting"):
             await query.message.reply_text(
                 "抽奖设置功能：\n"
                 "- 创建新抽奖\n"
@@ -518,6 +461,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data.startswith("set_message_min_length"):
             # 设置最小字数长度限制
             await set_message_min_length(update, context)
+        elif query.data.startswith("edit_checkin_text"):
+            # 修改签到文字
+            await edit_checkin_text(update, context)
+        elif query.data.startswith("set_checkin_points"):
+            # 设置签到获得数量
+            await set_checkin_points(update, context)
+        elif query.data.startswith("enable_points"):
+            # 启用积分功能
+            await enable_points(update, context)
+        elif query.data.startswith("disable_points"):
+            # 关闭积分功能
+            await disable_points(update, context)
     except Exception as e:
         logger.error(f"处理按钮回调时发生错误: {e}")
         try:

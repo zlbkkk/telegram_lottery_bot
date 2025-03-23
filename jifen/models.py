@@ -66,18 +66,19 @@ class PointRule(models.Model):
     
     group = models.OneToOneField(Group, on_delete=models.CASCADE, help_text="群组ID")
     
+    # 总开关
+    points_enabled = models.BooleanField(default=True, help_text="总积分功能开关，控制所有积分功能")
+    
     # 签到规则
     checkin_keyword = models.CharField(max_length=50, default='签到', help_text="签到关键词")
     checkin_points = models.IntegerField(default=5, help_text="签到获得积分")
     
     # 发言规则
-    message_points_enabled = models.BooleanField(default=True, help_text="是否启用发言积分")
     message_points = models.IntegerField(default=1, help_text="每条消息获得积分")
     message_daily_limit = models.IntegerField(default=50, help_text="每日发言积分上限")
     message_min_length = models.IntegerField(default=0, help_text="发言最小字数长度限制，0表示无限制")
     
     # 邀请规则
-    invite_points_enabled = models.BooleanField(default=True, help_text="是否启用邀请积分")
     invite_points = models.IntegerField(default=10, help_text="邀请一人获得积分")
     invite_daily_limit = models.IntegerField(default=0, help_text="每日邀请积分上限，0表示无限制")
     

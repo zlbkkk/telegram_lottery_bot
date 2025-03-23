@@ -60,7 +60,6 @@ async def show_message_rule_settings(update: Update, context: ContextTypes.DEFAU
                 rule, created = PointRule.objects.get_or_create(
                     group=group,
                     defaults={
-                        'message_points_enabled': True,
                         'message_points': 1,
                         'message_daily_limit': 50
                     }
@@ -176,8 +175,7 @@ async def set_message_points(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 group=group,
                 defaults={
                     'message_points': 1,
-                    'message_daily_limit': 50,
-                    'message_points_enabled': True
+                    'message_daily_limit': 50
                 }
             )
             logger.info(f"数据库查询结果: 群组={group.group_title}, 发言积分={rule.message_points}, 新创建={created}")
@@ -199,7 +197,7 @@ async def set_message_points(update: Update, context: ContextTypes.DEFAULT_TYPE)
         logger.info(f"已设置用户等待状态: waiting_for_message_points={True}, chat_id={chat_id}")
         
         # 创建界面内容，确保与图2格式一致
-        message_text = f"积分\n\n当前设置:{current_points}\n\n👉 输入内容进行设置:"
+        message_text = f"发言积分\n\n当前设置:{current_points}\n\n👉 输入内容进行设置:"
         
         # 创建返回按钮，与图2一致
         keyboard = [
@@ -285,8 +283,7 @@ async def handle_message_points_input(update: Update, context: ContextTypes.DEFA
                     group=group,
                     defaults={
                         'message_points': 1,
-                        'message_daily_limit': 50,
-                        'message_points_enabled': True
+                        'message_daily_limit': 50
                     }
                 )
                 
@@ -368,8 +365,7 @@ async def set_message_daily_limit(update: Update, context: ContextTypes.DEFAULT_
                 group=group,
                 defaults={
                     'message_points': 1,
-                    'message_daily_limit': 50,
-                    'message_points_enabled': True
+                    'message_daily_limit': 50
                 }
             )
             daily_limit_text = "无限制" if rule.message_daily_limit == 0 else str(rule.message_daily_limit)
@@ -393,7 +389,7 @@ async def set_message_daily_limit(update: Update, context: ContextTypes.DEFAULT_
         logger.info(f"已设置用户等待状态: waiting_for_daily_limit={True}, chat_id={chat_id}")
         
         # 创建界面内容，确保与图2格式一致
-        message_text = f"积分\n\n当前设置:{current_limit_text}\n\n👉 输入内容进行设置:"
+        message_text = f"发言每日上限\n\n当前设置:{current_limit_text}\n\n👉 输入内容进行设置:"
         
         # 创建返回按钮，与图2一致
         keyboard = [
@@ -470,28 +466,35 @@ async def handle_daily_limit_input(update: Update, context: ContextTypes.DEFAULT
     # 更新数据库
     @sync_to_async
     def update_daily_limit(chat_id, limit):
+        from django.db import transaction
+        
         try:
-            group = Group.objects.get(group_id=chat_id)
-            rule, created = PointRule.objects.get_or_create(
-                group=group,
-                defaults={
-                    'message_points': 1,
-                    'message_daily_limit': 50,
-                    'message_points_enabled': True
-                }
-            )
-            
-            # 记录旧值，便于日志
-            old_limit = rule.message_daily_limit
-            old_limit_text = "无限制" if old_limit == 0 else str(old_limit)
-            
-            # 更新每日上限值
-            rule.message_daily_limit = limit
-            rule.save()
-            
-            new_limit_text = "无限制" if limit == 0 else str(limit)
-            logger.info(f"群组 {group.group_title} (ID: {chat_id}) 的每日上限已从 {old_limit_text} 更新为 {new_limit_text}")
-            return True, group.group_title
+            with transaction.atomic():  # 使用原子事务确保操作完整性
+                group = Group.objects.get(group_id=chat_id)
+                rule, created = PointRule.objects.get_or_create(
+                    group=group,
+                    defaults={
+                        'message_points': 1,
+                        'message_daily_limit': 50
+                    }
+                )
+                
+                # 记录旧值，便于日志
+                old_limit = rule.message_daily_limit
+                old_limit_text = "无限制" if old_limit == 0 else str(old_limit)
+                new_limit_text = "无限制" if limit == 0 else str(limit)
+                
+                # 更新每日上限值
+                rule.message_daily_limit = limit
+                rule.save()
+                
+                # 确认数据已保存
+                rule_check = PointRule.objects.get(id=rule.id)
+                check_limit_text = "无限制" if rule_check.message_daily_limit == 0 else str(rule_check.message_daily_limit)
+                logger.info(f"验证保存: 更新后从数据库重新读取的每日上限={check_limit_text}")
+                
+                logger.info(f"群组 {group.group_title} (ID: {chat_id}) 的每日上限已从 {old_limit_text} 更新为 {new_limit_text}")
+                return True, group.group_title
         except Exception as e:
             logger.error(f"更新每日上限设置时出错: {e}", exc_info=True)
             return False, "未知群组"
@@ -558,7 +561,6 @@ async def set_message_min_length(update: Update, context: ContextTypes.DEFAULT_T
                 defaults={
                     'message_points': 1,
                     'message_daily_limit': 50,
-                    'message_points_enabled': True,
                     'message_min_length': 0
                 }
             )
@@ -583,7 +585,7 @@ async def set_message_min_length(update: Update, context: ContextTypes.DEFAULT_T
         logger.info(f"已设置用户等待状态: waiting_for_min_length={True}, chat_id={chat_id}")
         
         # 创建界面内容，确保与图2格式一致
-        message_text = f"积分\n\n当前设置:{current_length_text}\n\n👉 输入内容进行设置:"
+        message_text = f"发言最小字数\n\n当前设置:{current_length_text}\n\n👉 输入内容进行设置:"
         
         # 创建返回按钮，与图2一致
         keyboard = [
@@ -669,7 +671,6 @@ async def handle_min_length_input(update: Update, context: ContextTypes.DEFAULT_
                     defaults={
                         'message_points': 1,
                         'message_daily_limit': 50,
-                        'message_points_enabled': True,
                         'message_min_length': 0
                     }
                 )

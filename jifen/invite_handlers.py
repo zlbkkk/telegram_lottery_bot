@@ -57,7 +57,6 @@ async def show_invite_rule_settings(update: Update, context: ContextTypes.DEFAUL
                 rule, created = PointRule.objects.get_or_create(
                     group=group,
                     defaults={
-                        'invite_points_enabled': True,
                         'invite_points': 1,
                         'invite_daily_limit': 0
                     }
@@ -170,7 +169,6 @@ async def set_invite_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rule, created = PointRule.objects.get_or_create(
                 group=group,
                 defaults={
-                    'invite_points_enabled': True,
                     'invite_points': 1
                 }
             )
@@ -193,7 +191,7 @@ async def set_invite_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"已设置用户等待状态: waiting_for_invite_points={True}, chat_id={chat_id}")
         
         # 创建界面内容，确保与图2格式一致
-        message_text = f"积分\n\n当前设置:{current_points}\n\n👉 输入内容进行设置:"
+        message_text = f"邀请积分\n\n当前设置:{current_points}\n\n👉 输入内容进行设置:"
         
         # 创建返回按钮，与图2一致
         keyboard = [
@@ -270,32 +268,24 @@ async def handle_invite_points_input(update: Update, context: ContextTypes.DEFAU
     # 更新数据库
     @sync_to_async
     def update_points(chat_id, points):
-        from django.db import transaction
-        
         try:
-            with transaction.atomic():  # 使用原子事务确保操作完整性
-                group = Group.objects.get(group_id=chat_id)
-                rule, created = PointRule.objects.get_or_create(
-                    group=group,
-                    defaults={
-                        'invite_points_enabled': True,
-                        'invite_points': 1
-                    }
-                )
-                
-                # 记录旧值，便于日志
-                old_points = rule.invite_points
-                
-                # 更新积分值
-                rule.invite_points = points
-                rule.save()
-                
-                # 验证保存是否成功
-                rule_check = PointRule.objects.get(id=rule.id)
-                logger.info(f"验证保存: 更新后从数据库重新读取的积分值={rule_check.invite_points}")
-                
-                logger.info(f"群组 {group.group_title} (ID: {chat_id}) 的邀请积分已从 {old_points} 更新为 {points}")
-                return True, group.group_title
+            group = Group.objects.get(group_id=chat_id)
+            rule, created = PointRule.objects.get_or_create(
+                group=group,
+                defaults={
+                    'invite_points': 1
+                }
+            )
+            
+            # 记录旧值，便于日志
+            old_points = rule.invite_points
+            
+            # 更新积分值
+            rule.invite_points = points
+            rule.save()
+            
+            logger.info(f"群组 {group.group_title} (ID: {chat_id}) 的邀请积分已从 {old_points} 更新为 {points}")
+            return True, group.group_title
         except Exception as e:
             logger.error(f"更新邀请积分设置时出错: {e}", exc_info=True)
             return False, "未知群组"
@@ -360,16 +350,16 @@ async def set_invite_daily_limit(update: Update, context: ContextTypes.DEFAULT_T
             rule, created = PointRule.objects.get_or_create(
                 group=group,
                 defaults={
-                    'invite_points_enabled': True,
                     'invite_points': 1,
                     'invite_daily_limit': 0
                 }
             )
-            logger.info(f"数据库查询结果: 群组={group.group_title}, 邀请每日上限={rule.invite_daily_limit}, 新创建={created}")
+            daily_limit_text = "无限制" if rule.invite_daily_limit == 0 else str(rule.invite_daily_limit)
+            logger.info(f"数据库查询结果: 群组={group.group_title}, 每日邀请上限={daily_limit_text}, 新创建={created}")
             return rule.invite_daily_limit, group.group_title
         except Exception as e:
-            logger.error(f"获取当前邀请每日上限设置时出错: {e}", exc_info=True)
-            return 0, "未知群组"  # 默认值为0（无限制）
+            logger.error(f"获取当前每日邀请上限设置时出错: {e}", exc_info=True)
+            return 0, "未知群组" # 默认值为0，表示无限制
     
     try:
         daily_limit_info = await get_current_daily_limit(chat_id)
@@ -386,7 +376,7 @@ async def set_invite_daily_limit(update: Update, context: ContextTypes.DEFAULT_T
         logger.info(f"已设置用户等待状态: waiting_for_invite_daily_limit={True}, chat_id={chat_id}")
         
         # 创建界面内容，确保与图2格式一致
-        message_text = f"积分\n\n当前设置:{current_setting}\n\n👉 输入内容进行设置:"
+        message_text = f"邀请每日上限\n\n当前设置:{current_setting}\n\n👉 输入内容进行设置:"
         
         # 创建返回按钮，与图2一致
         keyboard = [
@@ -489,33 +479,34 @@ async def handle_invite_daily_limit_input(update: Update, context: ContextTypes.
         
         # 使用sync_to_async更新数据库中的每日上限值
         @sync_to_async
-        def update_daily_limit(chat_id, daily_limit):
+        def update_daily_limit(chat_id, limit):
             try:
                 group = Group.objects.get(group_id=chat_id)
                 rule, created = PointRule.objects.get_or_create(
                     group=group,
                     defaults={
-                        'invite_points_enabled': True,
                         'invite_points': 1,
-                        'invite_daily_limit': daily_limit
+                        'invite_daily_limit': 0
                     }
                 )
                 
-                # 记录旧值
-                old_value = rule.invite_daily_limit
+                # 记录旧值，便于日志
+                old_limit = rule.invite_daily_limit
+                old_limit_text = "无限制" if old_limit == 0 else str(old_limit)
                 
-                # 更新值
-                rule.invite_daily_limit = daily_limit
+                # 更新每日上限值
+                rule.invite_daily_limit = limit
                 rule.save()
                 
-                logger.info(f"成功更新群组 {group.group_title} (ID: {chat_id}) 的邀请每日上限从 {old_value} 到 {daily_limit}")
-                return True, group.group_title, old_value
+                new_limit_text = "无限制" if limit == 0 else str(limit)
+                logger.info(f"群组 {group.group_title} (ID: {chat_id}) 的每日邀请上限已从 {old_limit_text} 更新为 {new_limit_text}")
+                return True, group.group_title
             except Exception as e:
-                logger.error(f"更新邀请每日上限时出错: {e}", exc_info=True)
-                return False, None, None
+                logger.error(f"更新每日邀请上限设置时出错: {e}", exc_info=True)
+                return False, "未知群组"
         
         # 更新数据库
-        success, group_title, old_value = await update_daily_limit(chat_id, daily_limit)
+        success, group_title = await update_daily_limit(chat_id, daily_limit)
         
         # 清除等待状态
         context.user_data.clear()
@@ -523,9 +514,8 @@ async def handle_invite_daily_limit_input(update: Update, context: ContextTypes.
         if success:
             # 显示不同的消息取决于设置值
             daily_limit_text = "无限制" if daily_limit == 0 else str(daily_limit)
-            old_value_text = "无限制" if old_value == 0 else str(old_value)
             
-            success_message = f"已成功将群组 {group_title} 的邀请每日上限从 {old_value_text} 更新为 {daily_limit_text}。"
+            success_message = f"✅ 设置成功，每日邀请上限已更新为 {daily_limit_text}。"
             
             await update.message.reply_text(
                 success_message,

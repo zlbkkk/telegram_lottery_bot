@@ -1,9 +1,10 @@
 import logging
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, Chat
 from telegram.ext import ContextTypes
 from django.utils import timezone
 from asgiref.sync import sync_to_async
-from .models import Group, PointRule
+from .models import Group, PointRule, DailyMessageStat, MessagePoint, PointTransaction, User
+from django.db import transaction
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -740,4 +741,170 @@ async def back_to_message_rule(update: Update, context: ContextTypes.DEFAULT_TYP
         group_id = int(callback_data.split("_")[2])
     
     # 返回到发言规则设置菜单
-    await show_message_rule_settings(update, context, group_id, query) 
+    await show_message_rule_settings(update, context, group_id, query)
+
+async def process_message_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    处理群聊中的消息，根据发言规则更新用户积分
+    """
+    # 跳过非文本消息
+    if not update.message or not update.message.text:
+        logger.debug("跳过非文本消息")
+        return
+    
+    # 跳过非群组消息
+    chat = update.effective_chat
+    if chat.type not in [Chat.GROUP, Chat.SUPERGROUP]:
+        logger.debug(f"跳过非群组消息，当前类型: {chat.type}")
+        return
+    
+    # 获取消息内容和发送者
+    text = update.message.text.strip()
+    user = update.effective_user
+    chat_id = chat.id
+    message_id = update.message.message_id
+    
+    logger.info(f"开始处理群组 {chat_id} 中用户 {user.id} ({user.full_name}) 的发言积分, 消息ID: {message_id}, 消息内容: {text[:20]}...")
+    
+    try:
+        # 处理发言积分
+        @sync_to_async
+        def process_message_points_for_user(chat_id, user_id, message_id, text):
+            try:
+                # 获取群组对象
+                logger.info(f"尝试获取群组对象: {chat_id}")
+                group = Group.objects.get(group_id=chat_id, is_active=True)
+                logger.info(f"成功获取群组: {group.group_title} (ID: {group.id})")
+                
+                # 获取该群组的积分规则
+                logger.info(f"尝试获取群组积分规则")
+                rule = PointRule.objects.filter(group=group).first()
+                logger.info(f"积分规则获取结果: {'成功' if rule else '失败'}")
+                
+                if not rule:
+                    logger.warning(f"群组 {chat_id} 未设置积分规则")
+                    return None, None, None
+                
+                logger.info(f"积分规则: points_enabled={rule.points_enabled}, message_points={rule.message_points}, daily_limit={rule.message_daily_limit}, min_length={rule.message_min_length}")
+                
+                if not rule.points_enabled:
+                    logger.warning(f"群组 {chat_id} 的积分功能已关闭")
+                    return None, None, None
+                
+                # 检查消息长度是否满足最小字数要求
+                if rule.message_min_length > 0 and len(text) < rule.message_min_length:
+                    logger.debug(f"消息长度 {len(text)} 小于最小要求 {rule.message_min_length}")
+                    return None, None, None
+                
+                # 获取用户对象
+                logger.info(f"尝试获取用户对象: {user_id}")
+                user_obj = User.objects.filter(telegram_id=user_id, group=group, is_active=True).first()
+                if not user_obj:
+                    logger.warning(f"用户 {user_id} 在群组 {chat_id} 中不存在或非活跃")
+                    return None, None, None
+                
+                logger.info(f"成功获取用户: {user_obj.id}, 当前积分: {user_obj.points}")
+                
+                # 检查每日积分上限
+                today = timezone.now().date()
+                
+                # 获取用户今日已获得的发言积分
+                logger.info(f"尝试获取用户今日发言统计")
+                daily_stat = DailyMessageStat.objects.filter(
+                    user=user_obj,
+                    group=group,
+                    message_date=today
+                ).first()
+                
+                # 如果没有今日记录，创建一个
+                if not daily_stat:
+                    logger.info(f"未找到今日发言统计，将创建新记录")
+                    daily_stat = DailyMessageStat(
+                        user=user_obj,
+                        group=group,
+                        message_date=today,
+                        message_count=0,
+                        points_awarded=0
+                    )
+                else:
+                    logger.info(f"今日已发言 {daily_stat.message_count} 次，已获得 {daily_stat.points_awarded} 积分")
+                
+                # 检查是否达到每日上限
+                if rule.message_daily_limit > 0 and daily_stat.points_awarded >= rule.message_daily_limit:
+                    logger.info(f"用户 {user_id} 在群组 {chat_id} 中已达到每日发言积分上限 {rule.message_daily_limit}")
+                    return group, user_obj, 0
+                
+                # 计算本次可获得的积分
+                points_to_award = rule.message_points
+                
+                # 如果有每日上限，确保不超过上限
+                if rule.message_daily_limit > 0:
+                    remaining_points = rule.message_daily_limit - daily_stat.points_awarded
+                    if points_to_award > remaining_points:
+                        points_to_award = remaining_points
+                    logger.info(f"今日剩余可获得积分: {remaining_points}, 本次将获得: {points_to_award}")
+                
+                # 如果没有积分可获得，直接返回
+                if points_to_award <= 0:
+                    logger.info(f"没有积分可获得，跳过积分更新")
+                    return group, user_obj, 0
+                
+                # 创建消息积分记录并更新用户积分
+                with transaction.atomic():
+                    try:
+                        logger.info(f"开始事务处理: 创建消息积分记录并更新用户积分")
+                        # 创建消息积分记录
+                        MessagePoint.objects.create(
+                            user=user_obj,
+                            group=group,
+                            message_id=message_id,
+                            points_awarded=points_to_award,
+                            message_date=today
+                        )
+                        logger.info(f"已创建消息积分记录")
+                        
+                        # 更新用户积分
+                        old_points = user_obj.points
+                        user_obj.points += points_to_award
+                        user_obj.save()
+                        logger.info(f"已更新用户积分: {old_points} → {user_obj.points}")
+                        
+                        # 更新每日统计
+                        daily_stat.message_count += 1
+                        daily_stat.points_awarded += points_to_award
+                        daily_stat.save()
+                        logger.info(f"已更新每日统计: message_count={daily_stat.message_count}, points_awarded={daily_stat.points_awarded}")
+                        
+                        # 创建积分变动记录
+                        PointTransaction.objects.create(
+                            user=user_obj,
+                            group=group,
+                            amount=points_to_award,
+                            type='MESSAGE',
+                            description=f"发言获得 {points_to_award} 积分",
+                            transaction_date=today
+                        )
+                        logger.info(f"已创建积分变动记录")
+                        
+                        logger.info(f"用户 {user_id} 在群组 {chat_id} 发言获得 {points_to_award} 积分，当前总积分: {user_obj.points}")
+                        return group, user_obj, points_to_award
+                    except Exception as e:
+                        # 记录具体的错误信息
+                        logger.error(f"创建发言积分记录或更新积分时出错: {e}", exc_info=True)
+                        # 事务回滚，确保数据一致性
+                        raise
+            except Group.DoesNotExist:
+                logger.error(f"群组 {chat_id} 不存在或非活跃")
+                return None, None, None
+            except Exception as e:
+                logger.error(f"处理发言积分时出错: {e}", exc_info=True)
+                return None, None, None
+        
+        # 执行发言积分处理
+        logger.info(f"调用async处理用户 {user.id} 的发言积分")
+        group, user_obj, points_awarded = await process_message_points_for_user(chat_id, user.id, message_id, text)
+        logger.info(f"发言积分处理结果: group={group is not None}, user_obj={user_obj is not None}, points_awarded={points_awarded}")
+        
+        # 不需要发送通知消息，静默增加积分
+    except Exception as e:
+        logger.error(f"处理发言积分时出现未捕获异常: {e}", exc_info=True) 

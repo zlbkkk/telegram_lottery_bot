@@ -37,7 +37,8 @@ from jifen.message_handlers import (
     back_to_message_rule,
     handle_message_points_input,
     handle_daily_limit_input,
-    handle_min_length_input
+    handle_min_length_input,
+    process_message_points
 )
 
 # 导入邀请规则处理模块
@@ -599,6 +600,10 @@ def run_bot():
         # 注册回调查询处理器
         application.add_handler(CallbackQueryHandler(button_callback))
         logger.info("注册按钮回调处理器")
+        
+        # 注册发言积分处理器 - 用于处理群组中的发言积分
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, process_message_points))
+        logger.info("注册发言积分处理器 - 处理群组中的发言积分")
         
         # 注册签到消息处理器 - 用于处理群组中的签到消息
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, process_group_message))

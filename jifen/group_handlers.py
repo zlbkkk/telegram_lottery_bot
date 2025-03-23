@@ -9,6 +9,26 @@ from .models import Group, User
 # 设置日志
 logger = logging.getLogger(__name__)
 
+# 创建一个全局变量用于存储用户缓存清除函数的引用
+_clear_user_groups_cache_func = None
+
+# 设置缓存清除函数的引用
+def set_cache_clear_function(func):
+    """设置缓存清除函数的引用"""
+    global _clear_user_groups_cache_func
+    _clear_user_groups_cache_func = func
+    logger.info("缓存清除函数引用已设置")
+
+# 本地版本的缓存清除函数
+def clear_user_groups_cache(telegram_id):
+    """清除特定用户的群组缓存"""
+    global _clear_user_groups_cache_func
+    if _clear_user_groups_cache_func:
+        _clear_user_groups_cache_func(telegram_id)
+        logger.info(f"已清除用户 {telegram_id} 的群组缓存")
+    else:
+        logger.warning(f"缓存清除函数未设置，无法清除用户 {telegram_id} 的缓存")
+
 def extract_status_change(chat_member_update: ChatMemberUpdated) -> tuple[bool, bool] or None:
     """
     提取ChatMemberUpdated中的状态变化
@@ -175,9 +195,9 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
                     group, created = await save_group_to_db(chat.id, chat.title, chat_type, member_count, is_admin)
                     
                     if created:
-                        logger.info(f"Group {chat.title} ({chat.id}) 已经存储到 database")
+                        logger.info(f"Group {chat.title} ({chat.id}) has been added to the database")
                     else:
-                        logger.info(f"Group {chat.title} ({chat.id}) 已经更新 in the database")
+                        logger.info(f"Group {chat.title} ({chat.id}) has been updated in the database")
                     
                     # 记录添加机器人的用户到该群组的记录
                     try:
@@ -196,6 +216,10 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
                             logger.info(f"创建了用户 {cause_user.full_name} 在群组 {chat.title} 的记录")
                         else:
                             logger.info(f"更新了用户 {cause_user.full_name} 在群组 {chat.title} 的记录")
+                            
+                        # 清除该用户的群组缓存，确保立即能看到新群组
+                        clear_user_groups_cache(cause_user.id)
+                        logger.info(f"已清除用户 {cause_user.id} 的群组缓存，新群组将立即可见")
                     except Exception as e:
                         logger.error(f"将用户添加到群组记录时出错: {e}")
                         
@@ -212,6 +236,10 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
                     success = await mark_group_inactive(chat.id)
                     if success:
                         logger.info(f"Group {chat.title} ({chat.id}) has been marked as inactive")
+                        
+                        # 清除该用户的群组缓存，确保立即更新群组列表
+                        clear_user_groups_cache(cause_user.id)
+                        logger.info(f"已清除用户 {cause_user.id} 的群组缓存，群组列表将立即更新")
                 except Exception as e:
                     logger.error(f"Error updating group status in database: {e}")
     
@@ -341,6 +369,10 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     logger.info(f"创建了用户 {member_user.full_name} 在群组 {chat.title} 的记录")
                 else:
                     logger.info(f"更新了用户 {member_user.full_name} 在群组 {chat.title} 的记录")
+                
+                # 清除该用户的群组缓存，确保立即能看到新群组
+                clear_user_groups_cache(member_user.id)
+                logger.info(f"已清除用户 {member_user.id} 的群组缓存，新群组将立即可见")
             else:
                 logger.warning(f"找不到群组记录: {chat.id} - {chat.title}")
         except Exception as e:
@@ -355,11 +387,16 @@ async def handle_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             group = await sync_to_async(Group.objects.filter(group_id=chat.id).first)()
             
             if group:
-                # 标记用户为非活跃
-                user = await sync_to_async(User.objects.filter(telegram_id=member_user.id, group=group).first)()
-                if user:
-                    user.is_active = False
-                    await sync_to_async(user.save)()
-                    logger.info(f"用户 {member_user.full_name} 在群组 {chat.title} 的记录已标记为非活跃")
+                # 将该用户在群组中标记为非活跃
+                await sync_to_async(User.objects.filter(
+                    telegram_id=member_user.id,
+                    group__group_id=chat.id
+                ).update)(is_active=False)
+                
+                logger.info(f"用户 {member_user.id} ({member_user.full_name}) 已被标记为在群组 {chat.id} 中非活跃")
+                
+                # 清除该用户的群组缓存，确保立即更新显示
+                clear_user_groups_cache(member_user.id)
+                logger.info(f"已清除用户 {member_user.id} 的群组缓存，群组列表将立即更新")
         except Exception as e:
             logger.error(f"处理用户离开群组时出错: {e}") 

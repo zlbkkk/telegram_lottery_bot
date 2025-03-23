@@ -3,7 +3,8 @@ import asyncio
 import os
 import sys
 import threading
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats, BotCommandScopeAllChatAdministrators, BotCommandScopeDefault, MenuButtonCommands, MenuButtonDefault
+import time
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, BotCommand, BotCommandScopeAllPrivateChats, InlineKeyboardButton, BotCommandScopeAllGroupChats, BotCommandScopeAllChatAdministrators, BotCommandScopeDefault, MenuButtonCommands, MenuButtonDefault
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, filters, ChatMemberHandler, MessageHandler
 from asgiref.sync import sync_to_async
 from django.db import transaction
@@ -51,7 +52,8 @@ from jifen.invite_handlers import (
 # 导入群组处理模块
 from jifen.group_handlers import (
     handle_my_chat_member,
-    handle_chat_member
+    handle_chat_member,
+    set_cache_clear_function
 )
 
 # 导入需要的模型
@@ -71,12 +73,44 @@ TOKEN = "8057896490:AAHyuY9GnXIAqWsdwSoRO_SSsE3x4xIVsZ8"
 bot_running = False
 bot_lock = threading.Lock()
 
-# 获取用户所有活跃群组的同步函数
+# 初始化一个简单的内存缓存，用于存储用户群组信息
+# 格式: {user_id: (timestamp, groups_data)}
+user_groups_cache = {}
+# 缓存过期时间（秒）
+CACHE_EXPIRY = 60  # 1分钟
+
+# 清除特定用户的群组缓存
+def clear_user_groups_cache(telegram_id):
+    """清除特定用户的群组缓存"""
+    if telegram_id in user_groups_cache:
+        del user_groups_cache[telegram_id]
+        logger.info(f"已清除用户 {telegram_id} 的群组缓存")
+
+# 设置缓存清除函数的引用到group_handlers模块
+set_cache_clear_function(clear_user_groups_cache)
+
 @sync_to_async
-def get_user_active_groups(telegram_id):
+def get_user_active_groups(telegram_id, force_refresh=False):
     """
-    获取用户所在的所有活跃群组
+    获取用户所在的所有活跃群组，带缓存功能
+    
+    参数:
+    telegram_id: 用户的Telegram ID
+    force_refresh: 是否强制刷新缓存，默认为False
     """
+    # 如果强制刷新或在用户加入/离开群组后调用，跳过缓存
+    if force_refresh and telegram_id in user_groups_cache:
+        clear_user_groups_cache(telegram_id)
+        logger.info(f"强制刷新用户 {telegram_id} 的群组数据")
+    
+    # 检查缓存
+    current_time = time.time()
+    if telegram_id in user_groups_cache:
+        cache_time, groups_data = user_groups_cache[telegram_id]
+        if current_time - cache_time < CACHE_EXPIRY:
+            logger.info(f"从缓存获取用户 {telegram_id} 的群组数据")
+            return groups_data
+    
     try:
         logger.info(f"正在获取用户 {telegram_id} 的活跃群组")
         
@@ -122,6 +156,8 @@ def get_user_active_groups(telegram_id):
                 for g in raw_groups:
                     logger.info(f"  - 原始SQL: 群组 {g[1]} (ID: {g[0]})")
         
+        # 更新缓存
+        user_groups_cache[telegram_id] = (current_time, groups_info)
         return groups_info
     except Exception as e:
         logger.error(f"获取用户群组时出错: {e}", exc_info=True)
@@ -143,6 +179,7 @@ def get_all_active_groups():
 # 清除所有范围内的机器人命令并只设置start命令
 async def clear_all_commands_and_set_start(bot):
     """清除所有范围内的命令并只设置start命令"""
+    logger.info("正在初始化机器人命令...")
     # 定义需要清理和设置的所有范围
     scopes = [
         BotCommandScopeDefault(),  # 默认范围
@@ -170,6 +207,8 @@ async def clear_all_commands_and_set_start(bot):
         logger.info("成功设置全局默认菜单按钮")
     except Exception as e:
         logger.warning(f"设置全局默认菜单按钮失败: {e}")
+        
+    logger.info("机器人命令初始化完成")
 
 # start命令处理函数
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -177,24 +216,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"用户 {user.id} ({user.full_name}) 正在执行 /start 命令")
     
-    # 清除所有范围内的命令并只设置start命令
-    try:
-        await clear_all_commands_and_set_start(context.bot)
-        
-        # 明确地设置当前聊天的菜单按钮为默认菜单，保持左下角的Menu按钮
-        await context.bot.set_chat_menu_button(
-            chat_id=update.effective_chat.id,
-            menu_button=MenuButtonDefault()
-        )
-        
-        logger.info("成功设置机器人命令列表，只保留start命令")
-    except Exception as e:
-        logger.warning(f"设置命令列表失败: {e}")
+    # 检查是否是从群聊中启动机器人（通过startgroup参数）
+    force_refresh = False
+    if context.args and 'startgroup' in context.args:
+        force_refresh = True
+        logger.info(f"用户 {user.id} 通过startgroup参数启动机器人，将强制刷新群组数据")
     
-    user = update.effective_user
+    # 只在私聊中设置菜单按钮，减少不必要的API调用
+    if update.effective_chat.type == 'private':
+        try:
+            # 明确地设置当前聊天的菜单按钮为默认菜单，保持左下角的Menu按钮
+            await context.bot.set_chat_menu_button(
+                chat_id=update.effective_chat.id,
+                menu_button=MenuButtonDefault()
+            )
+            logger.info(f"为用户 {user.id} 设置了菜单按钮")
+        except Exception as e:
+            logger.warning(f"设置菜单按钮失败: {e}")
     
-    # 获取用户所在的群组列表
-    user_groups = await get_user_active_groups(user.id)
+    # 获取用户所在的群组列表，如果是从群组启动，强制刷新缓存
+    user_groups = await get_user_active_groups(user.id, force_refresh=force_refresh)
     
     # 准备键盘按钮
     keyboard = []
@@ -300,7 +341,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "back_to_groups":
             # 返回群组列表
             user = update.effective_user
-            user_groups = await get_user_active_groups(user.id)
+            # 强制刷新缓存，确保显示最新的群组列表
+            user_groups = await get_user_active_groups(user.id, force_refresh=True)
             
             # 准备键盘按钮
             keyboard = []

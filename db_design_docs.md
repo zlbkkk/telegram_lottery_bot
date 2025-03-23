@@ -11,10 +11,11 @@
 5. `message_points` - 发言积分记录表
 6. `daily_message_stats` - 发言每日统计表
 7. `invites` - 邀请记录表
-8. `point_transactions` - 积分变动记录表
-9. `raffles` - 抽奖活动表
-10. `subscription_requirements` - 关注要求表
-11. `raffle_participants` - 抽奖参与记录表
+8. `daily_invite_stats` - 邀请每日统计表
+9. `point_transactions` - 积分变动记录表
+10. `raffles` - 抽奖活动表
+11. `subscription_requirements` - 关注要求表
+12. `raffle_participants` - 抽奖参与记录表
 
 ## 表结构详细说明
 
@@ -100,10 +101,12 @@ CREATE TABLE `point_rules` (
   `message_points_enabled` tinyint(1) NOT NULL DEFAULT 1 COMMENT '是否启用发言积分',
   `message_points` int NOT NULL DEFAULT 1 COMMENT '每条消息获得积分',
   `message_daily_limit` int NOT NULL DEFAULT 50 COMMENT '每日发言积分上限',
+  `message_min_length` int NOT NULL DEFAULT 0 COMMENT '发言最小字数长度限制，0表示无限制',
   
   /* 邀请规则 */
   `invite_points_enabled` tinyint(1) NOT NULL DEFAULT 1 COMMENT '是否启用邀请积分',
   `invite_points` int NOT NULL DEFAULT 10 COMMENT '邀请一人获得积分',
+  `invite_daily_limit` int NOT NULL DEFAULT 0 COMMENT '每日邀请积分上限，0表示无限制',
   
   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -120,8 +123,10 @@ CREATE TABLE `point_rules` (
 - `message_points_enabled`: 是否启用发言积分
 - `message_points`: 每条消息获得的积分
 - `message_daily_limit`: 每日发言积分上限
+- `message_min_length`: 发言最小字数长度限制
 - `invite_points_enabled`: 是否启用邀请积分
 - `invite_points`: 邀请一个新成员获得的积分
+- `invite_daily_limit`: 每日邀请积分上限，0表示无限制
 
 **关系**：
 - 通过`group_id`与`groups`表关联，使用级联删除
@@ -261,7 +266,41 @@ CREATE TABLE `invites` (
 - `inviter_id`和`invitee_id`都与`users`表关联
 - 通过`group_id`与`groups`表关联
 
-### 8. 积分变动记录表 (point_transactions)
+### 8. 邀请每日统计表 (daily_invite_stats)
+
+统计用户每日在群组中的邀请情况和积分获取。
+
+```sql
+CREATE TABLE `daily_invite_stats` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` bigint NOT NULL COMMENT '用户ID',
+  `group_id` bigint NOT NULL COMMENT '群组ID',
+  `invite_date` date NOT NULL COMMENT '统计日期',
+  `invite_count` int NOT NULL DEFAULT 0 COMMENT '邀请人数',
+  `points_awarded` int NOT NULL DEFAULT 0 COMMENT '获得积分',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `idx_user_group_date` (`user_id`, `group_id`, `invite_date`),
+  KEY `idx_user_id` (`user_id`),
+  KEY `idx_group_id` (`group_id`),
+  CONSTRAINT `fk_daily_invite_stats_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`),
+  CONSTRAINT `fk_daily_invite_stats_group` FOREIGN KEY (`group_id`) REFERENCES `groups` (`group_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='邀请每日统计表';
+```
+
+**主要字段说明**：
+- `user_id`: 用户ID
+- `group_id`: 群组ID
+- `invite_date`: 统计日期
+- `invite_count`: 当日邀请人数
+- `points_awarded`: 当日获得的积分总数
+
+**关系**：
+- 通过`user_id`与`users`表关联
+- 通过`group_id`与`groups`表关联
+
+### 9. 积分变动记录表 (point_transactions)
 
 记录所有积分变动情况。
 
@@ -297,7 +336,7 @@ CREATE TABLE `point_transactions` (
 - 通过`user_id`与`users`表关联
 - 通过`group_id`与`groups`表关联
 
-### 9. 抽奖活动表 (raffles)
+### 10. 抽奖活动表 (raffles)
 
 存储抽奖活动信息。
 
@@ -345,7 +384,7 @@ CREATE TABLE `raffles` (
 - 通过`group_id`与`groups`表关联
 - 通过`created_by`与`users`表关联
 
-### 10. 关注要求表 (subscription_requirements)
+### 11. 关注要求表 (subscription_requirements)
 
 存储参与抽奖需要关注的频道或群组。
 
@@ -372,7 +411,7 @@ CREATE TABLE `subscription_requirements` (
 **关系**：
 - 通过`raffle_id`与`raffles`表关联，使用级联删除
 
-### 11. 抽奖参与记录表 (raffle_participants)
+### 12. 抽奖参与记录表 (raffle_participants)
 
 记录用户参与抽奖的情况。
 
@@ -450,6 +489,7 @@ point_rules   |  |
 checkins      |  |
 message_points|  |
 daily_message_stats
+daily_invite_stats
    ^          |  |
    |          |  |
    |          |  |
@@ -461,8 +501,10 @@ daily_message_stats
 
 1. **用户管理**：通过`users`表直接记录用户在每个群组中的信息和积分
 2. **积分系统**：支持签到、发言和邀请三种主要积分获取方式
+   - 支持对每种积分获取方式设置细粒度的规则，如每日上限、邀请积分等
+   - 通过每日统计表（`daily_message_stats`、`daily_invite_stats`）跟踪用户的每日活动
 3. **抽奖功能**：可创建抽奖活动，设置参与条件，跟踪参与和中奖记录
 4. **数据分析**：通过各种记录表和统计表支持用户活跃度和积分获取分析
 5. **关系维护**：使用外键约束确保数据完整性，部分表使用级联删除
 
-这套数据库设计能够满足Telegram抽奖机器人的所有功能需求，结构清晰，易于维护和扩展。 
+这套数据库设计能够满足Telegram抽奖机器人的所有功能需求，结构清晰，易于维护和扩展。通过添加邀请每日统计表和邀请每日上限字段，系统现在可以更精细地控制邀请积分的获取，防止滥用行为并提供更好的用户体验。 

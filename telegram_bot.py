@@ -239,60 +239,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"已处理用户 {user.id} 的邀请链接参数")
             return
     
-    # 检查是否是从群聊中启动机器人（通过startgroup参数）
-    force_refresh = False
-    if context.args and 'startgroup' in context.args:
-        force_refresh = True
-        logger.info(f"用户 {user.id} 通过startgroup参数启动机器人，将强制刷新群组数据")
+    # 获取用户加入的所有群组
+    groups = await get_all_active_groups()
     
-    # 只在私聊中设置菜单按钮，减少不必要的API调用
-    try:
-        # 明确地设置当前聊天的菜单按钮为默认菜单，保持左下角的Menu按钮
-        await context.bot.set_chat_menu_button(
-            chat_id=update.effective_chat.id,
-            menu_button=MenuButtonDefault()
-        )
-        logger.info(f"为用户 {user.id} 设置了菜单按钮")
-    except Exception as e:
-        logger.warning(f"设置菜单按钮失败: {e}")
+    # 构建欢迎消息
+    welcome_text = f"欢迎使用Telegram积分抽奖机器人！\n\n"
     
-    # 获取用户所在的群组列表，如果是从群组启动，强制刷新缓存
-    user_groups = await get_user_active_groups(user.id, force_refresh=force_refresh)
+    if groups:
+        welcome_text += "🏠 您已加入的群组:\n"
+        for group_id, group_name in groups:
+            welcome_text += f"• {group_name}\n"
+        welcome_text += "\n点击群组名称管理该群设置，或添加机器人到新群组。"
+    else:
+        welcome_text += "您还没有加入任何群组。请将机器人添加到您的群组中。"
     
-    # 准备键盘按钮
+    # 构建群组按钮，每行最多3个按钮
     keyboard = []
+    row = []
     
-    # 如果用户有加入的群组，为每个群组创建一个按钮
-    if user_groups:
-        for group_id, group_title in user_groups:
-            # 使用callback_data格式"group_{group_id}"来标识不同群组
-            keyboard.append([InlineKeyboardButton(f"🏘️ {group_title}", callback_data=f"group_{group_id}")])
+    for i, (group_id, group_name) in enumerate(groups):
+        # 添加群组按钮
+        row.append(InlineKeyboardButton(f"🏠 {group_name}", callback_data=f"group_{group_id}"))
+        
+        # 每3个按钮或者是最后一个按钮时，添加到键盘并重置行
+        if (i + 1) % 3 == 0 or i == len(groups) - 1:
+            keyboard.append(row)
+            row = []
     
-    # 添加"添加机器人到群组"按钮
-    bot_username = context.bot.username
-    invite_url = f"https://t.me/{bot_username}?startgroup=true"
-    keyboard.append([InlineKeyboardButton("➕ 添加机器人到群组", url=invite_url)])
-    
-    # 添加"生成邀请链接"按钮
-    keyboard.append([InlineKeyboardButton("🔗 生成邀请链接", callback_data="generate_invite")])
+    # 添加"添加到新群组"按钮
+    keyboard.append([InlineKeyboardButton("➕ 添加机器人到新群组", url="https://t.me/ShenZhenChatRoomPointsBot?startgroup=true")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # 构建欢迎消息
-    welcome_text = "欢迎使用Telegram积分抽奖机器人！\n"
-    
-    if user_groups:
-        welcome_text += "\n🏘️ 您已加入的群组：\n"
-        for _, group_title in user_groups:
-            welcome_text += f"• {group_title}\n"
-        welcome_text += "\n点击群组名称管理该群设置，或添加机器人到新群组。"
-    else:
-        welcome_text += "\n您还没有加入任何群组，请点击下方按钮将机器人添加到群组。"
-    
-    await update.message.reply_text(
-        welcome_text,
-        reply_markup=reply_markup
-    )
+    # 发送欢迎消息
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+    logger.info(f"已向用户 {user.id} 发送欢迎消息和群组列表")
 
 # 菜单按钮回调处理
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):

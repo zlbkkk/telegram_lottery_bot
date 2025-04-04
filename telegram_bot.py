@@ -73,7 +73,10 @@ from jifen.points_handlers import (
 from jifen.points_query import query_user_points
 
 # 导入抽奖处理模块
-from choujiang.lottery_handlers import lottery_setup_handler, get_lottery_handlers
+from choujiang.lottery_handlers import lottery_setup_handler, get_lottery_handlers, direct_check_lottery, view_lottery
+
+# 导入抽奖模型
+from choujiang.models import Lottery
 
 # 设置日志
 logging.basicConfig(
@@ -104,6 +107,16 @@ def clear_user_groups_cache(telegram_id):
 
 # 设置缓存清除函数的引用到group_handlers模块
 set_cache_clear_function(clear_user_groups_cache)
+
+@sync_to_async
+def is_user_admin(telegram_id):
+    """检查用户是否是管理员"""
+    try:
+        from jifen.models import User
+        return User.objects.filter(telegram_id=telegram_id, is_admin=True).exists()
+    except Exception as e:
+        logger.error(f"检查用户管理员状态时出错: {e}")
+        return False
 
 @sync_to_async
 def get_user_active_groups(telegram_id, force_refresh=False):
@@ -228,59 +241,100 @@ async def clear_all_commands_and_set_start(bot):
 
 # start命令处理函数
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """发送start菜单，显示用户加入的群组和添加机器人到新群组的按钮"""
-    # 检查消息是否来自私聊，如果不是，则不发送欢迎消息
-    if update.effective_chat.type != 'private':
-        logger.info(f"收到非私聊的/start命令，来自 {update.effective_chat.title}，忽略处理")
-        # 在群组中收到start命令时，不做任何响应
-        return
-        
+    """处理/start命令，显示基本介绍和群组选择"""
     user = update.effective_user
-    logger.info(f"用户 {user.id} ({user.full_name}) 正在私聊中执行 /start 命令")
     
-    # 检查是否有邀请参数
-    if context.args and context.args[0].startswith("invite_"):
-        # 处理邀请链接参数
-        handled = await handle_invite_start_parameter(update, context)
-        if handled:
-            logger.info(f"已处理用户 {user.id} 的邀请链接参数")
-            return
+    logger.info(f"处理/start命令，用户ID={user.id}，用户名={user.first_name}，参数={context.args}")
     
-    # 获取用户加入的所有群组
-    groups = await get_all_active_groups()
+    # 添加一条明确的测试消息
+    await update.message.reply_text(f"👋 你好，{user.first_name}！我是机器人，正在处理你的请求...")
     
-    # 构建欢迎消息
-    welcome_text = f"欢迎使用Telegram积分抽奖机器人！\n\n"
-    
-    if groups:
-        welcome_text += "🏠 您已加入的群组:\n"
-        for group_id, group_name in groups:
-            welcome_text += f"• {group_name}\n"
-        welcome_text += "\n点击群组名称管理该群设置，或添加机器人到新群组。"
-    else:
-        welcome_text += "您还没有加入任何群组。请将机器人添加到您的群组中。"
-    
-    # 构建群组按钮，每行最多3个按钮
-    keyboard = []
-    row = []
-    
-    for i, (group_id, group_name) in enumerate(groups):
-        # 添加群组按钮
-        row.append(InlineKeyboardButton(f"🏠 {group_name}", callback_data=f"group_{group_id}"))
+    try:
+        # 检查是否有深度链接参数
+        if context.args:
+            # 转发给lottery_handlers.py中的handle_start_command处理
+            from choujiang.lottery_handlers import handle_start_command
+            logger.info(f"检测到深度链接参数，转发给handle_start_command处理: {context.args}")
+            return await handle_start_command(update, context)
         
-        # 每3个按钮或者是最后一个按钮时，添加到键盘并重置行
-        if (i + 1) % 3 == 0 or i == len(groups) - 1:
-            keyboard.append(row)
-            row = []
-    
-    # 添加"添加到新群组"按钮
-    keyboard.append([InlineKeyboardButton("➕ 添加机器人到新群组", url="https://t.me/ShenZhenChatRoomPointsBot?startgroup=true")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    # 发送欢迎消息
-    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
-    logger.info(f"已向用户 {user.id} 发送欢迎消息和群组列表")
+        # 检查用户是否是管理员
+        is_admin = await is_user_admin(user.id)
+        
+        if is_admin:
+            # 管理员: 发送群组列表
+            # 获取用户关联的群组
+            user_groups = await get_user_active_groups(user.id)
+            
+            # 准备键盘按钮
+            keyboard = []
+            
+            # 为每个群组创建一个按钮
+            if user_groups:
+                for group_id, group_title in user_groups:
+                    keyboard.append([InlineKeyboardButton(f"🏘️ {group_title}", callback_data=f"group_{group_id}")])
+            
+            # 添加"添加机器人到群组"按钮
+            bot_username = context.bot.username
+            invite_url = f"https://t.me/{bot_username}?startgroup=true"
+            keyboard.append([InlineKeyboardButton("➕ 添加机器人到群组", url=invite_url)])
+            
+            # 添加"生成邀请链接"按钮
+            keyboard.append([InlineKeyboardButton("🔗 生成邀请链接", callback_data="generate_invite")])
+            
+            # 构建欢迎消息
+            welcome_text = "欢迎使用Telegram积分抽奖机器人！\n"
+            
+            if user_groups:
+                welcome_text += "\n🏘️ 您已加入的群组：\n"
+                for _, group_title in user_groups:
+                    welcome_text += f"• {group_title}\n"
+                welcome_text += "\n点击群组名称管理该群设置，或添加机器人到新群组。"
+            else:
+                welcome_text += "\n您还没有加入任何群组，请点击下方按钮将机器人添加到群组。"
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            # 发送欢迎消息
+            await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+            logger.info(f"已向管理员 {user.id} 发送欢迎消息和群组列表")
+            return
+        
+        # 普通用户: 先发送简单的欢迎消息和查看抽奖按钮
+        # 获取一个活跃的抽奖ID
+        @sync_to_async
+        def get_active_lottery_id():
+            from choujiang.models import Lottery
+            lottery = Lottery.objects.filter(status='ACTIVE').order_by('-created_at').first()
+            return lottery.id if lottery else None
+            
+        lottery_id = await get_active_lottery_id()
+        logger.info(f"获取到活跃的抽奖ID: {lottery_id}")
+        
+        if lottery_id:
+            # 创建一个带有抽奖ID的按钮
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎲 查看抽奖详情", callback_data=f"view_lottery_{lottery_id}")]
+            ])
+            
+            await update.message.reply_text(
+                f"👋 你好，{user.first_name}！\n\n"
+                f"欢迎使用Telegram积分抽奖机器人！\n\n"
+                f"我们有一个正在进行的抽奖活动，点击下方按钮立即查看详情。",
+                reply_markup=keyboard
+            )
+            logger.info(f"已向用户 {user.id} 发送抽奖查看按钮，抽奖ID={lottery_id}")
+        else:
+            # 没有活跃的抽奖，只显示欢迎消息
+            await update.message.reply_text(
+                f"👋 你好，{user.first_name}！\n\n"
+                f"欢迎使用Telegram积分抽奖机器人！\n\n"
+                f"目前没有正在进行的抽奖活动，请稍后再来查看，或输入 /check_lottery 命令查询所有抽奖。"
+            )
+            logger.info(f"已向用户 {user.id} 发送欢迎消息，没有找到活跃抽奖")
+        
+    except Exception as e:
+        logger.error(f"处理/start命令时出错: {e}", exc_info=True)
+        await update.message.reply_text("加载抽奖活动时出错，请手动输入 /check_lottery 命令查看可参与的抽奖。")
 
 # 菜单按钮回调处理
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -294,7 +348,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 先回复查询以避免Telegram超时错误
         await query.answer()
         
-        # 根据回调数据分别处理
+        # 检查是否是查看抽奖的回调
+        if query.data.startswith("view_lottery_"):
+            # 这是查看抽奖的回调，调用lottery_handlers.py中的view_lottery函数
+            from choujiang.lottery_handlers import view_lottery
+            logger.info(f"检测到查看抽奖回调, 调用view_lottery函数: {query.data}")
+            return await view_lottery(update, context)
+        
+        # 根据回调数据分别处理其他情况
         if query.data == "menu":
             # 显示菜单
             await show_menu(update, context)
@@ -620,6 +681,11 @@ def run_bot():
         lottery_handlers = get_lottery_handlers()
         logger.info(f"获取到 {len(lottery_handlers)} 个抽奖相关处理器")
         for handler in lottery_handlers:
+            # 排除另一个CommandHandler("start")处理器，确保只有一个start命令处理器
+            if handler.__class__.__name__ == "CommandHandler" and getattr(handler, 'command', None) == ['start']:
+                logger.info(f"跳过重复的start命令处理器")
+                continue
+                
             if handler != lottery_setup_handler:  # 避免重复注册
                 application.add_handler(handler)
                 logger.info(f"注册抽奖相关处理器: {handler.__class__.__name__}, Pattern: {getattr(handler, 'pattern', 'None')}")

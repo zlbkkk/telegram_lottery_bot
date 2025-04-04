@@ -302,6 +302,7 @@ class Participant(models.Model):
     joined_at = models.DateTimeField(verbose_name="参与时间")
     is_winner = models.BooleanField(default=False, verbose_name="是否中奖")
     prize = models.ForeignKey(Prize, on_delete=models.SET_NULL, null=True, blank=True, related_name="winners", verbose_name="获得奖品")
+    points_spent = models.IntegerField(default=0, verbose_name="消耗积分")
     
     def save(self, *args, **kwargs):
         # 新建对象时设置参与时间

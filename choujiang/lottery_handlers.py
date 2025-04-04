@@ -11,6 +11,7 @@ from asgiref.sync import sync_to_async
 import traceback
 from django.utils import timezone
 import asyncio
+import time
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -2024,11 +2025,11 @@ async def join_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 # 获取抽奖所需积分
                 points_required = lottery.points_required
                 
-                return user, has_joined, user_points, points_required, group
+                return user, has_joined, user_points, points_required, group, lottery
             except (Lottery.DoesNotExist, User.DoesNotExist):
-                return None, False, 0, 0, None
+                return None, False, 0, 0, None, None
                 
-        user_obj, has_joined, user_points, points_required, group = await check_user_participation(lottery_id, user.id)
+        user_obj, has_joined, user_points, points_required, group, lottery_obj = await check_user_participation(lottery_id, user.id)
         
         if not user_obj:
             logger.warning(f"[抽奖参与] 用户 {user.id} 不在群组中或抽奖不存在")
@@ -2037,7 +2038,19 @@ async def join_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             
         if has_joined:
             logger.info(f"[抽奖参与] 用户 {user.id} 已经参与了抽奖ID={lottery_id}")
-            await query.message.reply_text("您已经参与了该抽奖活动，请勿重复参与。")
+            message = await query.message.reply_text("您已经参与了该抽奖活动，请勿重复参与。")
+            
+            # 设置10秒后自动删除消息
+            async def delete_message_later():
+                await asyncio.sleep(10)  # 等待10秒
+                try:
+                    await message.delete()
+                    logger.info(f"[抽奖参与] 已自动删除用户 {user.id} 的重复参与提醒消息")
+                except Exception as e:
+                    logger.error(f"[抽奖参与] 自动删除重复参与提醒消息失败: {e}")
+            
+            # 创建异步任务，不等待它完成
+            context.application.create_task(delete_message_later())
             return
             
         # 检查用户积分是否足够
@@ -2062,22 +2075,210 @@ async def join_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             # 创建异步任务，不等待它完成
             context.application.create_task(delete_message_later())
             return
-            
-        # 用户满足条件，可以参与抽奖
+        
+        # 获取参与条件
         @sync_to_async
-        def join_raffle(lottery_id, user_obj, points_required):
+        def get_lottery_requirements(lottery_id):
+            from .models import Lottery, LotteryRequirement
+            lottery = Lottery.objects.get(id=lottery_id)
+            return list(LotteryRequirement.objects.filter(lottery=lottery)), lottery.title
+            
+        requirements, lottery_title = await get_lottery_requirements(lottery_id)
+        
+        # 创建深度链接，引导用户到私聊
+        bot_username = (await context.bot.get_me()).username
+        
+        # 如果没有参与条件，直接发送私聊链接并完成参与
+        if not requirements:
+            # 创建参与抽奖的深度链接，确保在私聊中可以识别
+            deep_link = f"https://t.me/{bot_username}?start=join_lottery_{lottery_id}"
+            
+            # 创建按钮，引导用户到私聊
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎲 前往参与抽奖", url=deep_link)]
+            ])
+            
+            # 发送提示消息
+            message = await query.message.reply_text(
+                f"✅ 您的积分满足参与条件！\n\n"
+                f"请点击下方按钮前往与机器人私聊，以完成抽奖参与。\n"
+                f"这样我们才能在您中奖时通知您！",
+                reply_markup=keyboard
+            )
+            
+            logger.info(f"[抽奖参与] 已引导用户 {user.id} 前往私聊参与抽奖ID={lottery_id}")
+            return
+            
+        # 如果有参与条件，使用新的命令格式
+        direct_link = f"https://t.me/{bot_username}?start=check_lottery_{lottery_id}"
+        
+        # 创建按钮，引导用户到私聊
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎲 前往检查参与条件", url=direct_link)]
+        ])
+        
+        # 发送提示消息
+        message = await query.message.reply_text(
+            f"✅ 您的积分满足参与条件！\n\n"
+            f"请点击下方按钮前往与机器人私聊，检查是否满足其他参与条件。\n"
+            f"如果跳转后没有自动显示抽奖信息，请在私聊中手动输入: /check_lottery {lottery_id}\n\n"
+            f"【抽奖ID: {lottery_id}】请记住此ID\n"
+            f"这样我们才能在您中奖时通知您！",
+            reply_markup=keyboard
+        )
+        
+        logger.info(f"[抽奖参与] 已引导用户 {user.id} 前往私聊检查参与条件，抽奖ID={lottery_id}")
+        
+    except Exception as e:
+        logger.error(f"[抽奖参与] A处理参与抽奖时出错: {e}\n{traceback.format_exc()}")
+        await query.message.reply_text("参与抽奖时出错，请重试。")
+
+async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理/start命令，用于处理深度链接参数"""
+    user = update.effective_user
+    message = update.message
+    
+    logger.info(f"[Start Command] 用户 {user.id} ({user.username or '无用户名'}) 执行 /start 命令，参数: {context.args}")
+    
+    # 检查是否有深度链接参数
+    if not context.args:
+        # 如果没有参数，让telegram_bot.py中的start函数处理
+        logger.info(f"[Start Command] 用户 {user.id} 没有提供深度链接参数，让主start处理器处理")
+        # 发送一条调试消息
+        await message.reply_text("这是handle_start_command函数的执行，但没有深度链接参数，将由主start函数继续处理")
+        return
+    
+    # 获取深度链接参数
+    deep_link_param = context.args[0]
+    logger.info(f"[Start Command] 处理深度链接参数: {deep_link_param}")
+    
+    try:
+        # 处理参与抽奖的深度链接
+        if deep_link_param.startswith("join_lottery_"):
+            try:
+                lottery_id = int(deep_link_param.split("_")[2])
+                logger.info(f"[Start Command] 检测到参与抽奖深度链接，抽奖ID={lottery_id}")
+                await message.reply_text(f"正在处理您参与抽奖ID={lottery_id}的请求...")
+                await process_lottery_join(update, context, lottery_id)
+            except (IndexError, ValueError) as e:
+                logger.error(f"[Start Command] 解析join_lottery参数出错: {e}, 参数值={deep_link_param}")
+                await message.reply_text(f"无法识别抽奖ID，请使用 /check_lottery 命令查看可参与的抽奖")
+        
+        # 处理检查参与条件的深度链接
+        elif deep_link_param.startswith("check_lottery_"):
+            try:
+                lottery_id = int(deep_link_param.split("_")[2])
+                logger.info(f"[Start Command] 检测到检查抽奖条件深度链接，抽奖ID={lottery_id}")
+                await message.reply_text(f"正在检查抽奖ID={lottery_id}的参与条件...")
+                await process_lottery_check(update, context, lottery_id)
+            except (IndexError, ValueError) as e:
+                logger.error(f"[Start Command] 解析check_lottery参数出错: {e}, 参数值={deep_link_param}")
+                await message.reply_text(f"无法识别抽奖ID，请使用 /check_lottery 命令查看可参与的抽奖")
+        
+        # 其他深度链接参数处理...
+        else:
+            logger.info(f"[Start Command] 未识别的深度链接参数: {deep_link_param}")
+            
+            # 如果参数看起来可能是抽奖ID，尝试直接处理
+            if deep_link_param.isdigit():
+                lottery_id = int(deep_link_param)
+                logger.info(f"[Start Command] 参数可能是抽奖ID，尝试直接检查抽奖ID={lottery_id}")
+                await message.reply_text(f"正在尝试将参数'{deep_link_param}'解析为抽奖ID...")
+                await process_lottery_check(update, context, lottery_id)
+            else:
+                # 未识别的参数，返回提示信息
+                logger.info(f"[Start Command] 未识别的参数，无法处理: {deep_link_param}")
+                await message.reply_text(f"无法识别参数'{deep_link_param}'，请使用 /check_lottery 命令查看可参与的抽奖。")
+            
+    except Exception as e:
+        logger.error(f"处理深度链接参数时出错: {e}\n{traceback.format_exc()}")
+        await message.reply_text(f"处理您的请求时出错，请使用 /check_lottery 命令查看可参与的抽奖。")
+
+async def process_lottery_join(update: Update, context: ContextTypes.DEFAULT_TYPE, lottery_id: int) -> None:
+    """处理用户通过深度链接直接参与抽奖"""
+    user = update.effective_user
+    
+    # 确定消息对象 - 可能来自回调查询或直接消息
+    if update.callback_query:
+        message = update.callback_query.message
+        logger.info(f"[抽奖参与] 用户 {user.id} 通过回调查询参与抽奖ID={lottery_id}")
+    else:
+        message = update.message
+        logger.info(f"[抽奖参与] 用户 {user.id} 通过深度链接参与抽奖ID={lottery_id}")
+    
+    try:
+        # 获取抽奖信息
+        @sync_to_async
+        def get_lottery_info(lottery_id, user_id):
             from .models import Lottery, Participant
+            from jifen.models import User
+            
+            try:
+                lottery = Lottery.objects.get(id=lottery_id)
+                group = lottery.group
+                
+                try:
+                    user = User.objects.get(telegram_id=user_id, group=group)
+                    has_joined = Participant.objects.filter(lottery=lottery, user=user).exists()
+                    return lottery, user, has_joined, lottery.points_required, user.points, group
+                except User.DoesNotExist:
+                    logger.info(f"[抽奖参与] 用户 {user_id} 尝试参与抽奖 {lottery_id}，但在群组 {group.group_id} 中不存在")
+                    return lottery, None, False, lottery.points_required, 0, group
+            except Lottery.DoesNotExist:
+                logger.info(f"[抽奖参与] 用户 {user_id} 尝试参与不存在的抽奖 {lottery_id}")
+                return None, None, False, 0, 0, None
+        
+        lottery, user_obj, has_joined, points_required, user_points, group = await get_lottery_info(lottery_id, user.id)
+        
+        if not lottery:
+            await message.reply_text("❌ 抽奖活动不存在。")
+            return False
+        
+        if not user_obj:
+            # 用户不是群组成员，提示加入群组
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    f"加入群组 {group.group_title or '抽奖群组'}", 
+                    url=f"https://t.me/{group.group_username}" if group.group_username else f"https://t.me/c/{str(group.group_id)[4:]}"
+                )]
+            ])
+            
+            await message.reply_text(
+                "❌ 您不是该抽奖所在群组的成员。\n\n"
+                "您需要先加入群组，与群组成员互动以获得积分，然后才能参与抽奖。\n\n"
+                "请点击下方按钮加入群组。加入后，请在群组中发送一些消息以便系统注册您的信息。",
+                reply_markup=keyboard
+            )
+            return False
+        
+        if has_joined:
+            await message.reply_text("您已经参与了该抽奖活动，请勿重复参与。")
+            return True
+        
+        # 检查用户是否有足够积分
+        if user_points < points_required:
+            await message.reply_text(
+                f"❌ 您的积分不足！\n\n"
+                f"参与抽奖需要 {points_required} 积分\n"
+                f"您当前的积分: {user_points}\n\n"
+                f"请通过与群组互动获取更多积分后再参与抽奖。"
+            )
+            return False
+        
+        # 参与抽奖
+        @sync_to_async
+        def join_raffle(lottery, user_obj, points_required):
+            from .models import Participant
             from jifen.models import PointTransaction
             from django.utils import timezone
             import datetime
-            
-            lottery = Lottery.objects.get(id=lottery_id)
             
             # 创建参与记录
             participant = Participant(
                 lottery=lottery,
                 user=user_obj,
-                joined_at=timezone.now()
+                joined_at=timezone.now(),
+                points_spent=points_required
             )
             participant.save()
             
@@ -2097,34 +2298,322 @@ async def join_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     transaction_date=datetime.date.today()
                 )
                 transaction.save()
-                
-            return True
             
-        success = await join_raffle(lottery_id, user_obj, points_required)
+            return True
+        
+        success = await join_raffle(lottery, user_obj, points_required)
         
         if success:
+            # 发送成功消息
             if points_required > 0:
-                await query.message.reply_text(
+                await message.reply_text(
                     f"✅ 您已成功参与抽奖活动！\n"
                     f"已扣除 {points_required} 积分\n"
                     f"剩余积分: {user_points - points_required}\n"
-                    f"请等待开奖结果。"
+                    f"请等待开奖结果。我们会在这里通知您！"
                 )
             else:
-                await query.message.reply_text(
+                await message.reply_text(
                     f"✅ 您已成功参与抽奖活动！\n"
                     f"无需扣除积分\n"
-                    f"请等待开奖结果。"
+                    f"请等待开奖结果。我们会在这里通知您！"
                 )
-                
+            
             logger.info(f"[抽奖参与] 用户 {user.id} 成功参与抽奖ID={lottery_id}，扣除积分={points_required}")
+            
+            # 返回到群组的按钮
+            group_link = None
+            if group.group_username:
+                group_link = f"https://t.me/{group.group_username}"
+            elif str(group.group_id).startswith('-100'):
+                group_link = f"https://t.me/c/{str(group.group_id)[4:]}"
+                
+            if group_link:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("返回群组", url=group_link)]
+                ])
+                
+                await message.reply_text("您可以点击下方按钮返回群组。", reply_markup=keyboard)
+                
+            return True
         else:
-            await query.message.reply_text("参与抽奖时出错，请重试。")
-            logger.error(f"[抽奖参与] 用户 {user.id} 参与抽奖ID={lottery_id}失败")
+            await message.reply_text("参与抽奖时出错，请重试。")
+            return False
             
     except Exception as e:
         logger.error(f"[抽奖参与] 处理参与抽奖时出错: {e}\n{traceback.format_exc()}")
-        await query.message.reply_text("参与抽奖时出错，请重试。")
+        await message.reply_text("参与抽奖时出错，请重试。")
+        return False
+
+async def process_lottery_check(update: Update, context: ContextTypes.DEFAULT_TYPE, lottery_id: int) -> None:
+    """处理用户通过深度链接检查抽奖参与条件"""
+    user = update.effective_user
+    
+    # 确定消息对象 - 可能来自回调查询或直接消息
+    if update.callback_query:
+        message = update.callback_query.message
+        logger.info(f"[抽奖条件检测] 用户 {user.id} 通过回调查询检查抽奖ID={lottery_id}的参与条件")
+    else:
+        message = update.message
+        logger.info(f"[抽奖条件检测] 用户 {user.id} 通过深度链接/命令检查抽奖ID={lottery_id}的参与条件")
+    
+    try:
+        # 获取抽奖信息和条件
+        @sync_to_async
+        def get_lottery_info_and_requirements(lottery_id):
+            from .models import Lottery, LotteryRequirement, Prize
+            
+            try:
+                lottery = Lottery.objects.get(id=lottery_id)
+                requirements = list(LotteryRequirement.objects.filter(lottery=lottery))
+                prizes = list(Prize.objects.filter(lottery=lottery))
+                return lottery, requirements, prizes
+            except Lottery.DoesNotExist:
+                return None, [], []
+        
+        lottery, requirements, prizes = await get_lottery_info_and_requirements(lottery_id)
+        
+        if not lottery:
+            await message.reply_text("❌ 抽奖活动不存在。")
+            return
+        
+        # 构建抽奖信息文本
+        lottery_info = f"🎁 抽奖活动 🎁\n\n"
+        lottery_info += f"{lottery.title}\n"
+        if lottery.description:
+            lottery_info += f"{lottery.description}\n\n"
+        else:
+            lottery_info += "\n"
+            
+        # 添加参与所需积分
+        lottery_info += f"💰 参与所需积分: {lottery.points_required}\n\n"
+        
+        # 添加奖项信息
+        if prizes:
+            lottery_info += "🏆 奖项设置:\n"
+            for prize in prizes:
+                lottery_info += f"• {prize.name}: {prize.description} ({prize.quantity}名)\n"
+            lottery_info += "\n"
+        
+        # 添加时间信息
+        if lottery.signup_deadline:
+            signup_deadline = lottery.signup_deadline.strftime("%Y-%m-%d %H:%M")
+            lottery_info += f"⏰ 报名截止: {signup_deadline}\n"
+        
+        if lottery.draw_time:
+            draw_time = lottery.draw_time.strftime("%Y-%m-%d %H:%M")
+            lottery_info += f"🎯 开奖时间: {draw_time}\n\n"
+        
+        # 添加参与条件信息
+        if requirements:
+            lottery_info += "📋 参与条件:\n"
+            for req in requirements:
+                if req.requirement_type == 'CHANNEL':
+                    lottery_info += f"• 必须加入: @{req.channel_username}\n"
+                elif req.requirement_type == 'GROUP':
+                    lottery_info += f"• 必须加入: @{req.group_username}\n"
+                elif req.requirement_type == 'REGISTRATION_TIME':
+                    lottery_info += f"• 账号注册时间: >{req.min_registration_days}天\n"
+            lottery_info += "\n"
+        
+        # 发送抽奖信息
+        await message.reply_text(lottery_info)
+        
+        if not requirements:
+            # 如果没有条件，直接参与
+            return await process_lottery_join(update, context, lottery_id)
+        
+        # 为每个频道/群组创建链接按钮
+        buttons = []
+        for req in requirements:
+            if req.requirement_type in ['CHANNEL', 'GROUP']:
+                username = req.channel_username if req.requirement_type == 'CHANNEL' else req.group_username
+                if username:
+                    buttons.append([InlineKeyboardButton(
+                        f"加入 @{username}", 
+                        url=f"https://t.me/{username}"
+                    )])
+        
+        # 添加检测按钮和直接参与按钮
+        buttons.append([InlineKeyboardButton(
+            "🔍 检测是否已满足条件", 
+            callback_data=f"private_check_req_{lottery_id}"
+        )])
+        buttons.append([InlineKeyboardButton(
+            "📤 不检查条件，直接参与", 
+            callback_data=f"private_join_lottery_{lottery_id}"
+        )])
+        
+        keyboard = InlineKeyboardMarkup(buttons)
+        
+        # 发送提示消息
+        await message.reply_text(
+            "请先满足以上条件后再参与抽奖！\n\n"
+            "满足条件后，点击\"检测是否已满足条件\"按钮继续。\n"
+            "如果您确认已满足所有条件，也可以点击\"不检查条件，直接参与\"按钮。",
+            reply_markup=keyboard
+        )
+        
+    except Exception as e:
+        logger.error(f"[抽奖条件检测] 处理检查条件时出错: {e}\n{traceback.format_exc()}")
+        await message.reply_text("检查条件时出错，请重试。")
+
+async def private_check_requirements(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理用户在私聊中点击检测条件按钮"""
+    query = update.callback_query
+    user = update.effective_user
+    
+    await query.answer()
+    
+    try:
+        # 从回调数据中提取抽奖ID
+        lottery_id = int(query.data.split("_")[3])
+        logger.info(f"[私聊抽奖条件检测] 用户 {user.id} 在私聊中请求检测抽奖ID={lottery_id}的参与条件")
+        
+        # 获取抽奖参与条件
+        @sync_to_async
+        def get_lottery_requirements(lottery_id):
+            from .models import Lottery, LotteryRequirement
+            try:
+                lottery = Lottery.objects.get(id=lottery_id)
+                return list(LotteryRequirement.objects.filter(lottery=lottery)), lottery
+            except Lottery.DoesNotExist:
+                logger.error(f"[私聊抽奖条件检测] 抽奖ID={lottery_id}不存在")
+                return None, None
+            
+        requirements, lottery = await get_lottery_requirements(lottery_id)
+        
+        if lottery is None:
+            await query.edit_message_text("❌ 抽奖活动不存在或已结束。")
+            return
+        
+        if not requirements:
+            # 如果没有条件，显示可以参与
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎲 立即参与抽奖", callback_data=f"private_join_lottery_{lottery_id}")]
+            ])
+            
+            await query.edit_message_text(
+                "此抽奖活动没有特殊参与条件，您可以直接参与！",
+                reply_markup=keyboard
+            )
+            return
+        
+        # 检查用户是否满足所有条件
+        all_requirements_met = True
+        unfulfilled_requirements = []
+        
+        for req in requirements:
+            if req.requirement_type == 'CHANNEL':
+                if not await check_channel_subscription(user.id, req.channel_username, context.bot):
+                    all_requirements_met = False
+                    unfulfilled_requirements.append(f"• 未关注频道: @{req.channel_username}")
+            elif req.requirement_type == 'GROUP':
+                if not await check_group_membership(user.id, req.group_username, context.bot):
+                    all_requirements_met = False
+                    unfulfilled_requirements.append(f"• 未加入群组: @{req.group_username}")
+            elif req.requirement_type == 'REGISTRATION_TIME':
+                if not await check_registration_time(user.id, req.min_registration_days):
+                    all_requirements_met = False
+                    unfulfilled_requirements.append(f"• 账号注册时间不满{req.min_registration_days}天")
+        
+        if all_requirements_met:
+            # 构建参与按钮
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🎲 立即参与抽奖", callback_data=f"private_join_lottery_{lottery_id}")]
+            ])
+            
+            # 添加随机字符串以避免内容完全相同导致的错误
+            timestamp = int(time.time())
+            await query.edit_message_text(
+                f"✅ 恭喜！您已满足所有参与条件，现在可以参与抽奖了！\n\n检测时间: {timestamp}",
+                reply_markup=keyboard
+            )
+            logger.info(f"[私聊抽奖条件检测] 用户 {user.id} 在私聊中满足抽奖ID={lottery_id}的所有参与条件")
+        else:
+            # 为每个未满足的条件创建链接按钮
+            buttons = []
+            for req in requirements:
+                if req.requirement_type in ['CHANNEL', 'GROUP']:
+                    username = req.channel_username if req.requirement_type == 'CHANNEL' else req.group_username
+                    if username:
+                        buttons.append([InlineKeyboardButton(
+                            f"加入 @{username}", 
+                            url=f"https://t.me/{username}"
+                        )])
+            
+            # 添加重新检测按钮和强制参与按钮
+            buttons.append([InlineKeyboardButton(
+                "🔄 重新检测", 
+                callback_data=f"private_check_req_{lottery_id}"
+            )])
+            buttons.append([InlineKeyboardButton(
+                "📤 不检查条件，直接参与", 
+                callback_data=f"private_join_lottery_{lottery_id}"
+            )])
+            
+            keyboard = InlineKeyboardMarkup(buttons)
+            
+            # 添加随机字符串以避免内容完全相同导致的错误
+            timestamp = int(time.time())
+            message_text = f"❌ 您尚未满足所有参与条件：\n\n"
+            message_text += "\n".join(unfulfilled_requirements)
+            message_text += f"\n\n请先满足以上条件，然后点击重新检测按钮。\n\n检测时间: {timestamp}"
+            await query.edit_message_text(
+                message_text,
+                reply_markup=keyboard
+            )
+            logger.info(f"[私聊抽奖条件检测] 用户 {user.id} 在私聊中未满足抽奖ID={lottery_id}的所有参与条件")
+    
+    except Exception as e:
+        logger.error(f"[私聊抽奖条件检测] 处理私聊检测按钮时出错: {e}\n{traceback.format_exc()}")
+        try:
+            await query.edit_message_text("检测参与条件时出错，请重试。")
+        except Exception as inner_e:
+            logger.error(f"[私聊抽奖条件检测] 发送错误消息时发生二次错误: {inner_e}")
+            try:
+                await query.message.reply_text("检测参与条件时出错，请重试。")
+            except:
+                pass
+
+async def private_join_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理用户在私聊中点击参与抽奖按钮"""
+    query = update.callback_query
+    user = update.effective_user
+    
+    await query.answer()
+    
+    try:
+        # 从回调数据中提取抽奖ID
+        lottery_id = int(query.data.split("_")[3])
+        logger.info(f"[私聊参与抽奖] 用户 {user.id} 在私聊中请求参与抽奖ID={lottery_id}")
+        
+        # 使用process_lottery_join处理
+        # 为了兼容process_lottery_join函数，我们需要修改update对象
+        # 将message属性设置为query.message
+        update.message = query.message
+        
+        # 设置context.args，以确保process_lottery_join可以正常运行
+        if not hasattr(context, 'args') or not context.args:
+            context.args = [str(lottery_id)]
+            
+        result = await process_lottery_join(update, context, lottery_id)
+        
+        if result:
+            logger.info(f"[私聊参与抽奖] 用户 {user.id} 成功参与抽奖ID={lottery_id}")
+        else:
+            logger.info(f"[私聊参与抽奖] 用户 {user.id} 参与抽奖ID={lottery_id}失败")
+            
+    except Exception as e:
+        logger.error(f"[私聊参与抽奖] 处理私聊参与按钮时出错: {e}\n{traceback.format_exc()}")
+        try:
+            await query.edit_message_text("参与抽奖时出错，请重试。")
+        except Exception as inner_e:
+            logger.error(f"[私聊参与抽奖] 发送错误消息时发生二次错误: {inner_e}")
+            try:
+                await query.message.reply_text("参与抽奖时出错，请重试。")
+            except:
+                pass
 
 # 创建抽奖设置对话处理器
 lottery_setup_handler = ConversationHandler(
@@ -2226,11 +2715,173 @@ def get_lottery_handlers():
     """返回所有抽奖相关的处理器"""
     return [
         lottery_setup_handler,
+        CommandHandler("start", handle_start_command),
         CallbackQueryHandler(publish_lottery_to_group, pattern="^publish_lottery_\d+$"),
         CallbackQueryHandler(join_lottery, pattern="^join_lottery_\d+$"),
+        CallbackQueryHandler(private_check_requirements, pattern="^private_check_req_\d+$"),
+        CallbackQueryHandler(private_join_lottery, pattern="^private_join_lottery_\d+$"),
+        # 新增直接处理抽奖检查的命令处理器
+        CommandHandler("check_lottery", direct_check_lottery),
+        # 新增处理查看抽奖按钮的回调
+        CallbackQueryHandler(view_lottery, pattern="^view_lottery_\d+$"),
         # 移除以下3个全局处理器，因为它们已经在对话处理器的MEDIA_UPLOAD状态中处理
         # CallbackQueryHandler(add_photo, pattern="^add_photo_\d+$"),
         # CallbackQueryHandler(add_video, pattern="^add_video_\d+$"),
         # CallbackQueryHandler(skip_media, pattern="^skip_media_\d+$"),
         # 这里可以添加其他抽奖相关的处理器
-    ] 
+    ]
+
+# 添加直接处理抽奖检查的函数
+async def direct_check_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """直接处理抽奖检查的命令，用于处理深度链接失败的情况"""
+    user = update.effective_user
+    
+    # 调试信息
+    logger.info(f"[Direct Check] 开始处理抽奖检查，用户ID={user.id}")
+    logger.info(f"[Direct Check] update类型: {type(update)}")
+    logger.info(f"[Direct Check] context.args: {getattr(context, 'args', None)}")
+    
+    # 获取消息对象，处理从start命令或回调查询调用的情况
+    if update.message:
+        message = update.message
+        logger.info(f"[Direct Check] 用户 {user.id} 通过消息执行检查抽奖，消息ID={message.message_id}")
+    elif update.callback_query:
+        message = update.callback_query.message
+        logger.info(f"[Direct Check] 用户 {user.id} 通过回调查询执行检查抽奖，消息ID={message.message_id}")
+    else:
+        logger.error(f"[Direct Check] 无法获取消息对象，update类型: {type(update)}")
+        return
+    
+    logger.info(f"[Direct Check] 用户 {user.id} 执行 /check_lottery 命令")
+    
+    # 发送一条临时消息
+    temp_message = await message.reply_text("正在查询可参与的抽奖活动，请稍候...")
+    
+    # 检查是否提供了抽奖ID参数
+    if not context.args:
+        # 如果没有提供ID参数，列出所有可参与的抽奖
+        @sync_to_async
+        def get_all_active_lotteries():
+            from .models import Lottery
+            from jifen.models import User, Group
+            
+            try:
+                # 直接获取所有活跃抽奖，不进行群组筛选
+                active_lotteries = Lottery.objects.filter(
+                    status='ACTIVE'
+                ).order_by('-created_at')
+                
+                logger.info(f"[Direct Check] 找到活跃抽奖数: {active_lotteries.count()}")
+                
+                result = []
+                for lottery in active_lotteries:
+                    result.append({
+                        'id': lottery.id,
+                        'title': lottery.title,
+                        'group_name': lottery.group.group_title or '未知群组',
+                        'points_required': lottery.points_required
+                    })
+                
+                return result
+            except Exception as e:
+                logger.error(f"[Direct Check] 获取抽奖列表时出错: {e}\n{traceback.format_exc()}")
+                return []
+            
+        lotteries = await get_all_active_lotteries()
+        
+        # 删除临时消息
+        try:
+            await temp_message.delete()
+        except:
+            pass
+        
+        if not lotteries:
+            await message.reply_text("目前没有可参与的抽奖活动。请返回群组查看最新抽奖。")
+            return
+        
+        text = "🎲 可参与的抽奖活动列表：\n\n"
+        buttons = []
+        
+        for lottery in lotteries:
+            text += f"ID: {lottery['id']} - {lottery['title']}\n"
+            text += f"群组: {lottery['group_name']}\n"
+            text += f"所需积分: {lottery['points_required']}\n\n"
+            
+            # 为每个抽奖添加一个查看按钮
+            buttons.append([InlineKeyboardButton(
+                f"查看 {lottery['title']} (ID:{lottery['id']})", 
+                callback_data=f"view_lottery_{lottery['id']}"
+            )])
+        
+        text += "请点击下方按钮查看抽奖详情，或者使用命令 /check_lottery ID 查看特定抽奖。"
+        
+        # 创建按钮键盘
+        keyboard = InlineKeyboardMarkup(buttons)
+        
+        await message.reply_text(text, reply_markup=keyboard)
+        return
+    
+    try:
+        # 删除临时消息
+        try:
+            await temp_message.delete()
+        except:
+            pass
+        
+        # 尝试将第一个参数解析为抽奖ID
+        lottery_id = int(context.args[0])
+        logger.info(f"[Direct Check] 准备检查抽奖ID={lottery_id}")
+        
+        # 调用process_lottery_check函数处理
+        await process_lottery_check(update, context, lottery_id)
+    except ValueError:
+        await message.reply_text("请提供有效的抽奖ID，例如：/check_lottery 123")
+    except Exception as e:
+        logger.error(f"[Direct Check] 处理抽奖检查命令时出错: {e}\n{traceback.format_exc()}")
+        await message.reply_text("处理您的请求时出错，请重试。")
+
+async def view_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理用户点击查看抽奖按钮的回调"""
+    query = update.callback_query
+    user = update.effective_user
+    
+    # 发送一条调试消息
+    logger.info(f"[查看抽奖] 调试: view_lottery函数被调用，用户={user.id}, 回调数据={query.data}")
+    
+    await query.answer()
+    
+    try:
+        # 从回调数据中提取抽奖ID
+        lottery_id = int(query.data.split("_")[2])
+        logger.info(f"[查看抽奖] 用户 {user.id} 请求查看抽奖ID={lottery_id}")
+        
+        # 发送一条明确的临时消息
+        temp_message = await query.message.reply_text(f"正在加载抽奖ID={lottery_id}的详细信息，请稍候...")
+        
+        # 设置context.args，以便process_lottery_check能够正常使用
+        if not hasattr(context, 'args') or not context.args:
+            context.args = [str(lottery_id)]
+            logger.info(f"[查看抽奖] 为用户 {user.id} 设置context.args={context.args}")
+        
+        # 创建一个临时的消息对象，用于process_lottery_check函数
+        # 因为process_lottery_check函数期望使用update.message
+        if not hasattr(update, 'message') or not update.message:
+            # 使用query.message作为临时消息对象
+            update.message = query.message
+            logger.info(f"[查看抽奖] 为用户 {user.id} 设置临时消息对象，消息ID={query.message.message_id}")
+        
+        # 使用process_lottery_check处理
+        await process_lottery_check(update, context, lottery_id)
+        
+        # 删除临时消息
+        try:
+            await temp_message.delete()
+        except:
+            pass
+        
+    except Exception as e:
+        logger.error(f"[查看抽奖] 处理查看抽奖按钮时出错: {e}\n{traceback.format_exc()}")
+        try:
+            await query.message.reply_text(f"处理您的请求时出错，请重试或使用 /check_lottery {lottery_id} 命令查看抽奖。")
+        except Exception as inner_e:
+            logger.error(f"[查看抽奖] 发送错误消息时发生二次错误: {inner_e}")

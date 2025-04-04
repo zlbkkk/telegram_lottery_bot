@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram 抽奖机器人原型</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        .section {
+            background-color: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .flow-diagram {
+            width: 100%;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            margin-bottom: 30px;
+        }
+        .prototype {
+            border: 1px solid #ddd;
+            border-radius: 10px;
+            padding: 10px;
+            margin-top: 20px;
+            background-color: #f0f2f5;
+        }
+        .tg-message {
+            background-color: white;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 15px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            max-width: 80%;
+        }
+        .tg-bot-message {
+            margin-left: auto;
+            background-color: #e3f2fd;
+        }
+        .tg-user-message {
+            margin-right: auto;
+        }
+        .tg-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .tg-button {
+            background-color: #389ce9;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            padding: 8px 16px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        h2 {
+            color: #0088cc;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+        }
+        h3 {
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="section">
+            <h1>Telegram 抽奖机器人原型设计</h1>
+            <p>这是一个基于用户需求设计的 Telegram 抽奖机器人原型，展示了从发起抽奖到开奖的完整流程。</p>
+        </div>
+
+        <div class="section">
+            <h2>完整流程图</h2>
+            <div class="flow-diagram">
+                <pre>
+开始 → 输入 /lottery 命令 → 进入创建抽奖模式 
+  ↓
+设置抽奖基本信息
+  ↓
+设置参与条件 → 添加关注要求（频道/群组）
+  ↓
+设置抽奖详情 → 设置标题 → 设置描述 → 设置奖品
+  ↓
+设置时间参数 → 设置报名截止时间 → 设置开奖时间
+  ↓
+设置参与方式 → 点击参与按钮 / 发送特定消息
+  ↓
+设置中奖人数 → 可设置多个奖项及对应人数
+  ↓
+设置结果通知 → 是否私聊通知中奖者 → 是否群内公布 → 是否置顶
+  ↓
+设置开奖方式 → 自动开奖 / 手动开奖
+  ↓
+预览并确认 → 发布抽奖
+  ↓
+用户参与阶段 → 用户点击参与按钮 → 检查关注要求 → 确认参与
+  ↓
+到达开奖时间 → 系统随机抽取中奖者 → 公布结果
+                </pre>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>原型界面展示</h2>
+            
+            <h3>1. 发起抽奖</h3>
+            <div class="prototype">
+                <div class="tg-message tg-user-message">
+                    /lottery
+                </div>
+                <div class="tg-message tg-bot-message">
+                    <b>🎉 欢迎使用抽奖机器人 🎉</b><br><br>
+                    您正在创建一个新的抽奖活动。请选择您想创建的抽奖类型：
+                    <div class="tg-buttons">
+                        <button class="tg-button">标准抽奖</button>
+                       
+                    </div>
+                </div>
+                <div class="tg-message tg-user-message">
+                    点击: <b>标准抽奖</b>
+                </div>
+            </div>
+
+            <h3>2. 设置抽奖基本信息</h3>
+            <div class="prototype">
+                <div class="tg-message tg-bot-message">
+                    <b>📝 抽奖基本信息设置</b><br><br>
+                    请输入抽奖活动的标题：<br>
+                    (例如: "周末大抽奖"、"新品上市庆祝抽奖")
+                </div>
+                <div class="tg-message tg-user-message">
+                    618购物节幸运抽奖
+                </div>
+                <div class="tg-message tg-bot-message">
+                    请输入抽奖活动的描述：<br>
+                    (可以包含活动背景、规则说明等)
+                </div>
+                <div class="tg-message tg-user-message">
+                    618购物节期间，关注我们的商城频道并参与抽奖，有机会获得丰厚奖品！
+                </div>
+            </div>
+
+            <h3>3. 设置参与条件</h3>
+            <div class="prototype">
+                <div class="tg-message tg-bot-message">
+                    <b>🔍 设置参与条件</b><br><br>
+                    用户需要满足哪些条件才能参与抽奖？
+                    <div class="tg-buttons">
+                        <button class="tg-button">必须关注特定频道/群组</button>
+                        
+                    </div>
+                </div>
+                <div class="tg-message tg-user-message">
+                    点击: <b>必须关注特定频道/群组</b>
+                </div>
+                <div class="tg-message tg-bot-message">
+                    请添加用户必须关注的频道或群组：<br>
+                    (请确保机器人是这些频道/群组的管理员，以便验证用户关注状态)
+                    <div class="tg-buttons">
+                        <button class="tg-button">添加频道/群组</button>
+                    </div>
+                </div>
+                <div class="tg-message tg-user-message">
+                    点击: <b>添加频道/群组</b>
+                </div>
+                <div class="tg-message tg-bot-message">
+                    请输入频道/群组的用户名或分享链接：<br>
+                    (例如: @channel_name 或 https://t.me/channel_name)
+                </div>
+                <div class="tg-message tg-user-message">
+                    @shopping_channel
+                </div>
+            </div>
+
+            <h3>4. 设置奖品信息</h3>
+            <div class="prototype">
+                <div class="tg-message tg-bot-message">
+                    <b>🎁 设置奖品信息</b><br><br>
+                    您想设置多少个奖项？
+                    <div class="tg-buttons">
+                        <button class="tg-button">1个奖项</button>
+                        <button class="tg-button">多个奖项</button>
+                    </div>
+                </div>
+                <div class="tg-message tg-user-message">
+                    点击: <b>多个奖项</b>
+                </div>
+                <div class="tg-message tg-bot-message">
+                    <b>请输入您要设置的奖项数量</b>：(1-10之间)
+                </div>
+                <div class="tg-message tg-user-message">
+                    3
+                </div>
+                <div class="tg-message tg-bot-message">
+                    您将设置3个奖项。请按顺序设置，从最高奖项开始。<br><br>
+                    <b>请设置第1个奖项：</b><br>
+                    奖项名称：(例如: 一等奖、特等奖)
+                </div>
+                <div class="tg-message tg-user-message">
+                    一等奖
+                </div>
+                <div class="tg-message tg-bot-message">
+                    请输入奖品内容：
+                </div>
+                <div class="tg-message tg-user-message">
+                    iPhone 15 Pro一台
+                </div>
+                <div class="tg-message tg-bot-message">
+                    设置中奖人数：
+                </div>
+                <div class="tg-message tg-user-message">
+                    1
+                </div>
+                <div class="tg-message tg-bot-message">
+                    <b>第1个奖项设置完成</b>：一等奖 - iPhone 15 Pro一台 (1名)<br><br>
+                    <b>请设置第2个奖项：</b><br>
+                    奖项名称：
+                </div>
+                <div class="tg-message tg-user-message">
+                    二等奖
+                </div>
+                <div class="tg-message tg-bot-message">
+                    请输入奖品内容：
+                </div>
+                <div class="tg-message tg-user-message">
+                    AirPods Pro
+                </div>
+                <div class="tg-message tg-bot-message">
+                    设置中奖人数：
+                </div>
+                <div class="tg-message tg-user-message">
+                    2
+                </div>
+                <div class="tg-message tg-bot-message">
+                    <b>第2个奖项设置完成</b>：二等奖 - AirPods Pro (2名)<br><br>
+                    <b>请设置第3个奖项：</b><br>
+                    奖项名称：
+                </div>
+                <div class="tg-message tg-user-message">
+                    三等奖
+                </div>
+                <div class="tg-message tg-bot-message">
+                    请输入奖品内容：
+                </div>
+                <div class="tg-message tg-user-message">
+                    京东购物卡100元
+                </div>
+                <div class="tg-message tg-bot-message">
+                    设置中奖人数：
+                </div>
+                <div class="tg-message tg-user-message">
+                    5
+                </div>
+                <div class="tg-message tg-bot-message">
+                    <b>第3个奖项设置完成</b>：三等奖 - 京东购物卡100元 (5名)<br><br>
+                    <b>所有奖项设置完成！</b> 共设置了以下奖项：<br>
+                    1. 一等奖: iPhone 15 Pro一台 (1名)<br>
+                    2. 二等奖: AirPods Pro (2名)<br>
+                    3. 三等奖: 京东购物卡100元 (5名)<br><br>
+                    请选择：
+                    <div class="tg-buttons">
+                        <button class="tg-button">确认并继续</button>
+                        <button class="tg-button">修改奖项设置</button>
+                    </div>
+                </div>
+                <div class="tg-message tg-user-message">
+                    点击: <b>确认并继续</b>
+                </div>
+            </div>
+
+            <h3>5. 设置时间参数</h3>
+            <div class="prototype">
+                <div class="tg-message tg-bot-message">
+                    <b>⏰ 设置时间参数</b><br><br>
+                    请选择报名截止时间：
+                    <div class="tg-buttons">
+                        <button class="tg-button">1天后</button>
+                        <button class="tg-button">3天后</button>
+                        <button class="tg-button">7天后</button>
+                        <button class="tg-button">自定义</button>
+                    </div>
+                </div>
+                <div class="tg-message tg-user-message">
+                    点击: <b>3天后</b>
+                </div>
+                <div class="tg-message tg-bot-message">
+                    请选择开奖时间：
+                    <div class="tg-buttons">
+                        <button class="tg-button">报名结束后立即开奖</button>
+                        <button class="tg-button">自定义开奖时间</button>
+                    </div>
+                </div>
+                <div class="tg-message tg-user-message">
+                    点击: <b>报名结束后立即开奖</b>
+                </div>
+            </div>
+
+            <h3>6. 设置通知方式</h3>
+            <div class="prototype">
+                <div class="tg-message tg-bot-message">
+                    <b>📣 设置通知方式</b><br><br>
+                    开奖后是否通过私聊通知中奖者？
+                    <div class="tg-buttons">
+                        <button class="tg-button">是</button>
+                        <button class="tg-button">否</button>
+                    </div>
+                </div>
+                <div class="tg-message tg-user-message">
+                    点击: <b>是</b>
+                </div>
+                <div class="tg-message tg-bot-message">
+                    开奖结果是否公布在群组内？
+                    <div class="tg-buttons">
+                        <button class="tg-button">是</button>
+                        <button class="tg-button">否</button>
+                    </div>
+                </div>
+                <div class="tg-message tg-user-message">
+                    点击: <b>是</b>
+                </div>
+                <div class="tg-message tg-bot-message">
+                    开奖结果是否置顶在群组内？
+                    <div class="tg-buttons">
+                        <button class="tg-button">是</button>
+                        <button class="tg-button">否</button>
+                    </div>
+                </div>
+                <div class="tg-message tg-user-message">
+                    点击: <b>是</b>
+                </div>
+            </div>
+
+            <h3>7. 预览抽奖信息</h3>
+            <div class="prototype">
+                <div class="tg-message tg-bot-message">
+                    <b>🔍 预览抽奖信息</b><br><br>
+                    <b>标题:</b> 618购物节幸运抽奖<br>
+                    <b>描述:</b> 618购物节期间，关注我们的商城频道并参与抽奖，有机会获得丰厚奖品！<br><br>
+                    <b>参与条件:</b><br>
+                    - 必须关注: @shopping_channel<br><br>
+                    <b>奖项设置:</b><br>
+                    - 一等奖: iPhone 15 Pro一台 (1名)<br>
+                    - 二等奖: AirPods Pro (2名)<br>
+                    - 三等奖: 京东购物卡100元 (5名)<br><br>
+                    <b>报名截止:</b> 2023年6月15日 20:00<br>
+                    <b>开奖时间:</b> 报名结束后立即开奖<br><br>
+                    <b>通知设置:</b><br>
+                    - 私聊通知中奖者: ✅<br>
+                    - 群组内公布结果: ✅<br>
+                    - 开奖结果置顶: ✅<br><br>
+                    确认发布这个抽奖活动吗？
+                    <div class="tg-buttons">
+                        <button class="tg-button">确认发布</button>
+                        
+                    </div>
+                </div>
+                <div class="tg-message tg-user-message">
+                    点击: <b>确认发布</b>
+                </div>
+            </div>
+
+            <h3>8. 抽奖活动发布成功</h3>
+            <div class="prototype">
+                <div class="tg-message tg-bot-message">
+                    <b>🎉 618购物节幸运抽奖 🎉</b><br><br>
+                    618购物节期间，关注我们的商城频道并参与抽奖，有机会获得丰厚奖品！<br><br>
+                    <b>奖项:</b><br>
+                    一等奖: iPhone 15 Pro一台 (1名)<br>
+                    二等奖: AirPods Pro (2名)<br>
+                    三等奖: 京东购物卡100元 (5名)<br><br>
+                    <b>参与方式:</b><br>
+                    1. 关注 @shopping_channel<br>
+                    2. 点击下方"参与抽奖"按钮<br><br>
+                    <b>活动时间:</b><br>
+                    报名截止: 2023年6月15日 20:00<br>
+                    开奖时间: 报名结束后立即开奖<br><br>
+                    <b>已参与人数: 0</b><br><br>
+                    <div class="tg-buttons">
+                        <button class="tg-button">参与抽奖</button>
+                        <button class="tg-button">查看参与者</button>
+                        <button class="tg-button">取消抽奖</button>
+                    </div>
+                </div>
+            </div>
+
+            <h3>9. 用户参与抽奖</h3>
+            <div class="prototype">
+                <div class="tg-message tg-user-message">
+                    点击: <b>参与抽奖</b>
+                </div>
+                <div class="tg-message tg-bot-message">
+                    正在检查您是否满足参与条件...<br><br>
+                    ✅ 已关注 @shopping_channel<br><br>
+                    恭喜！您已成功参与"618购物节幸运抽奖"！<br>
+                    请等待开奖结果，祝您好运！
+                </div>
+            </div>
+
+            <h3>10. 开奖结果公布</h3>
+            <div class="prototype">
+                <div class="tg-message tg-bot-message">
+                    <b>🎊 开奖结果公布 🎊</b><br><br>
+                    <b>618购物节幸运抽奖</b><br><br>
+                    抽奖已结束，共有187人参与！<br><br>
+                    <b>中奖名单:</b><br>
+                    一等奖 (iPhone 15 Pro一台):<br>
+                    @lucky_user123<br><br>
+                    恭喜以上中奖用户！机器人将私信联系中奖者，请及时查收。<br><br>
+                    感谢所有参与者，我们下次活动再见！
+                </div>
+            </div>
+
+            <h3>11. 私聊通知中奖者</h3>
+            <div class="prototype">
+                <div class="tg-message tg-bot-message">
+                    <b>🎉 恭喜您中奖了！ 🎉</b><br><br>
+                    您在"618购物节幸运抽奖"中获得了:<br>
+                    <b>一等奖: iPhone 15 Pro一台</b><br><br>
+                    请联系群组管理员 @admin_user 领取您的奖品。<br>
+                    领奖时请提供您的用户名和中奖截图。<br><br>
+                    再次恭喜您！
+                </div>
+            </div>
+
+            <h3>12. 管理员后台 - 抽奖统计</h3>
+            <div class="prototype">
+                <div class="tg-message tg-user-message">
+                    /lottery_stats
+                </div>
+                <div class="tg-message tg-bot-message">
+                    <b>📊 抽奖活动统计</b><br><br>
+                    <b>活动名称:</b> 618购物节幸运抽奖<br>
+                    <b>创建时间:</b> 2023年6月12日 15:30<br>
+                    <b>状态:</b> 已结束<br><br>
+                    <b>参与数据:</b><br>
+                    - 总参与人数: 187<br>
+                    - 参与率: 62.3% (群组总人数: 300)<br><br>
+                    <b>中奖者:</b><br>
+                    - 一等奖: @lucky_user123<br><br>
+                    <div class="tg-buttons">
+                        <button class="tg-button">导出参与者名单</button>
+                        <button class="tg-button">重新抽奖</button>
+                        <button class="tg-button">创建类似抽奖</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>功能亮点与特色</h2>
+            <ol>
+                <li><b>多样化的参与条件</b>: 支持设置关注特定频道/群组等条件</li>
+                <li><b>灵活的奖项设置</b>: 可设置多个奖项，每个奖项可定义不同的中奖人数</li>
+                <li><b>定时开奖</b>: 支持自动定时开奖，无需手动操作</li>
+                <li><b>多渠道通知</b>: 同时支持私聊通知和群组公告</li>
+                <li><b>防作弊机制</b>: 验证用户是否满足参与条件</li>
+                <li><b>数据统计</b>: 提供详细的抽奖活动数据分析</li>
+                <li><b>便捷管理</b>: 管理员可随时查看参与者列表，必要时可取消活动</li>
+                <li><b>用户友好</b>: 简洁直观的用户界面，参与过程简单</li>
+            </ol>
+        </div>
+
+        <div class="section">
+            <h2>扩展功能建议</h2>
+            <ol>
+                <li><b>积分抽奖</b>: 用户可使用积分增加中奖机会</li>
+                <li><b>条件抽奖</b>: A/B测试不同参与条件的效果</li>
+                <li><b>模板功能</b>: 保存抽奖设置为模板，方便重复使用</li>
+                <li><b>黑名单功能</b>: 排除特定用户参与抽奖</li>
+                <li><b>虚拟奖品发放</b>: 自动发放优惠码等虚拟奖品</li>
+                <li><b>定期抽奖</b>: 设置每日/每周定期抽奖</li>
+                <li><b>多语言支持</b>: 支持不同语言的用户界面</li>
+                <li><b>数据导出</b>: 导出参与者和中奖者数据</li>
+            </ol>
+        </div>
+    </div>
+</body>
+</html> 

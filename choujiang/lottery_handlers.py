@@ -10,6 +10,7 @@ import logging
 from asgiref.sync import sync_to_async
 import traceback
 from django.utils import timezone
+import asyncio
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -1966,6 +1967,165 @@ async def edit_points_required(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.message.reply_text("处理请求时出错，请重试。")
         return ConversationHandler.END
 
+async def join_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理用户点击参与抽奖的回调"""
+    query = update.callback_query
+    user = update.effective_user
+    
+    await query.answer()
+    
+    try:
+        # 从回调数据中提取抽奖ID
+        lottery_id = int(query.data.split("_")[2])
+        logger.info(f"[抽奖参与] 用户 {user.id} 尝试参与抽奖ID={lottery_id}")
+        
+        # 获取抽奖信息
+        @sync_to_async
+        def get_lottery_and_check_status(lottery_id):
+            from .models import Lottery
+            try:
+                lottery = Lottery.objects.get(id=lottery_id)
+                return lottery, lottery.status == 'ACTIVE' and lottery.can_join
+            except Lottery.DoesNotExist:
+                return None, False
+                
+        lottery, is_active = await get_lottery_and_check_status(lottery_id)
+        
+        if not lottery:
+            logger.warning(f"[抽奖参与] 抽奖ID={lottery_id}不存在")
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("❌ 该抽奖活动不存在或已被删除。")
+            return
+            
+        if not is_active:
+            logger.warning(f"[抽奖参与] 抽奖ID={lottery_id}已结束或不可参与")
+            await query.message.reply_text("❌ 该抽奖活动已结束或不在可参与时间内。")
+            return
+            
+        # 检查用户是否已参与
+        @sync_to_async
+        def check_user_participation(lottery_id, user_id):
+            from .models import Lottery, Participant
+            from jifen.models import User, Group
+            
+            try:
+                lottery = Lottery.objects.get(id=lottery_id)
+                group = lottery.group
+                
+                # 获取用户在该群组的记录
+                user = User.objects.get(telegram_id=user_id, group=group)
+                
+                # 检查是否已参与
+                has_joined = Participant.objects.filter(lottery=lottery, user=user).exists()
+                
+                # 获取用户积分
+                user_points = user.points
+                
+                # 获取抽奖所需积分
+                points_required = lottery.points_required
+                
+                return user, has_joined, user_points, points_required, group
+            except (Lottery.DoesNotExist, User.DoesNotExist):
+                return None, False, 0, 0, None
+                
+        user_obj, has_joined, user_points, points_required, group = await check_user_participation(lottery_id, user.id)
+        
+        if not user_obj:
+            logger.warning(f"[抽奖参与] 用户 {user.id} 不在群组中或抽奖不存在")
+            await query.message.reply_text("❌ 您不是该群组的成员，无法参与抽奖。")
+            return
+            
+        if has_joined:
+            logger.info(f"[抽奖参与] 用户 {user.id} 已经参与了抽奖ID={lottery_id}")
+            await query.message.reply_text("您已经参与了该抽奖活动，请勿重复参与。")
+            return
+            
+        # 检查用户积分是否足够
+        if user_points < points_required:
+            logger.info(f"[抽奖参与] 用户 {user.id} 积分不足，当前积分={user_points}，需要积分={points_required}")
+            message = await query.message.reply_text(
+                f"❌ 您的积分不足，无法参与抽奖。\n"
+                f"当前积分: {user_points}\n"
+                f"所需积分: {points_required}\n"
+                f"还差 {points_required - user_points} 积分"
+            )
+            
+            # 设置10秒后自动删除消息
+            async def delete_message_later():
+                await asyncio.sleep(10)  # 等待10秒
+                try:
+                    await message.delete()
+                    logger.info(f"[抽奖参与] 已自动删除用户 {user.id} 的积分不足提醒消息")
+                except Exception as e:
+                    logger.error(f"[抽奖参与] 自动删除积分不足提醒消息失败: {e}")
+            
+            # 创建异步任务，不等待它完成
+            context.application.create_task(delete_message_later())
+            return
+            
+        # 用户满足条件，可以参与抽奖
+        @sync_to_async
+        def join_raffle(lottery_id, user_obj, points_required):
+            from .models import Lottery, Participant
+            from jifen.models import PointTransaction
+            from django.utils import timezone
+            import datetime
+            
+            lottery = Lottery.objects.get(id=lottery_id)
+            
+            # 创建参与记录
+            participant = Participant(
+                lottery=lottery,
+                user=user_obj,
+                joined_at=timezone.now()
+            )
+            participant.save()
+            
+            # 如果需要扣除积分
+            if points_required > 0:
+                # 扣除用户积分
+                user_obj.points -= points_required
+                user_obj.save()
+                
+                # 记录积分变动
+                transaction = PointTransaction(
+                    user=user_obj,
+                    group=user_obj.group,
+                    amount=-points_required,
+                    type='RAFFLE_PARTICIPATION',
+                    description=f"参与抽奖 '{lottery.title}'",
+                    transaction_date=datetime.date.today()
+                )
+                transaction.save()
+                
+            return True
+            
+        success = await join_raffle(lottery_id, user_obj, points_required)
+        
+        if success:
+            if points_required > 0:
+                await query.message.reply_text(
+                    f"✅ 您已成功参与抽奖活动！\n"
+                    f"已扣除 {points_required} 积分\n"
+                    f"剩余积分: {user_points - points_required}\n"
+                    f"请等待开奖结果。"
+                )
+            else:
+                await query.message.reply_text(
+                    f"✅ 您已成功参与抽奖活动！\n"
+                    f"无需扣除积分\n"
+                    f"请等待开奖结果。"
+                )
+                
+            logger.info(f"[抽奖参与] 用户 {user.id} 成功参与抽奖ID={lottery_id}，扣除积分={points_required}")
+        else:
+            await query.message.reply_text("参与抽奖时出错，请重试。")
+            logger.error(f"[抽奖参与] 用户 {user.id} 参与抽奖ID={lottery_id}失败")
+            
+    except Exception as e:
+        logger.error(f"[抽奖参与] 处理参与抽奖时出错: {e}\n{traceback.format_exc()}")
+        await query.message.reply_text("参与抽奖时出错，请重试。")
+
 # 创建抽奖设置对话处理器
 lottery_setup_handler = ConversationHandler(
     entry_points=[
@@ -2067,6 +2227,7 @@ def get_lottery_handlers():
     return [
         lottery_setup_handler,
         CallbackQueryHandler(publish_lottery_to_group, pattern="^publish_lottery_\d+$"),
+        CallbackQueryHandler(join_lottery, pattern="^join_lottery_\d+$"),
         # 移除以下3个全局处理器，因为它们已经在对话处理器的MEDIA_UPLOAD状态中处理
         # CallbackQueryHandler(add_photo, pattern="^add_photo_\d+$"),
         # CallbackQueryHandler(add_video, pattern="^add_video_\d+$"),

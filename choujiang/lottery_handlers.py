@@ -1367,9 +1367,17 @@ async def set_pin_results(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if requirements:
                 for req in requirements:
                     if req.requirement_type == 'CHANNEL':
-                        requirements_text += f"• 必须关注: @{req.channel_username}\n"
+                        # 智能显示频道用户名，如果不以@开头则添加@
+                        channel_name = req.channel_username or str(req.channel_id)
+                        if channel_name and not channel_name.startswith('@'):
+                            channel_name = f"@{channel_name}"
+                        requirements_text += f"• 必须关注: {channel_name}\n"
                     elif req.requirement_type == 'GROUP':
-                        requirements_text += f"• 必须加入: @{req.group_username}\n"
+                        # 智能显示群组用户名，如果不以@开头则添加@
+                        group_name = req.group_username or str(req.group_id)
+                        if group_name and not group_name.startswith('@'):
+                            group_name = f"@{group_name}"
+                        requirements_text += f"• 必须加入: {group_name}\n"
                     elif req.requirement_type == 'REGISTRATION_TIME':
                         requirements_text += f"• 账号注册时间: >{req.min_registration_days}天\n"
             else:
@@ -2120,10 +2128,7 @@ async def join_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # 发送提示消息
         message = await query.message.reply_text(
             f"✅ 您的积分满足参与条件！\n\n"
-            f"请点击下方按钮前往与机器人私聊，检查是否满足其他参与条件。\n"
-            f"如果跳转后没有自动显示抽奖信息，请在私聊中手动输入: /check_lottery {lottery_id}\n\n"
-            f"【抽奖ID: {lottery_id}】请记住此ID\n"
-            f"这样我们才能在您中奖时通知您！",
+            f"请点击下方按钮前往与机器人私聊，检查是否满足其他参与条件。\n",
             reply_markup=keyboard
         )
         
@@ -2483,12 +2488,18 @@ async def process_lottery_check(update: Update, context: ContextTypes.DEFAULT_TY
             for req in requirements:
                 if req.requirement_type == 'CHANNEL':
                     display_name = req.channel_username or str(req.channel_id)
-                    lottery_text += f"• 必须关注: @{display_name}\n"
+                    # 智能显示频道用户名，如果不以@开头则添加@
+                    if display_name and not display_name.startswith('@'):
+                        display_name = f"@{display_name}"
+                    lottery_text += f"• 必须关注: {display_name}\n"
                 elif req.requirement_type == 'GROUP':
                     display_name = req.group_username or str(req.group_id)
-                    lottery_text += f"• 必须加入: @{display_name}\n"
+                    # 智能显示群组用户名，如果不以@开头则添加@
+                    if display_name and not display_name.startswith('@'):
+                        display_name = f"@{display_name}"
+                    lottery_text += f"• 必须加入: {display_name}\n"
                 elif req.requirement_type == 'REGISTRATION_TIME':
-                    lottery_text += f"• 账号注册时间至少 {req.min_registration_days} 天\n"
+                    lottery_text += f"• 账号注册时间: >{req.min_registration_days}天\n"
         else:
             lottery_text += "\n此抽奖没有特殊参与条件。\n"
         
@@ -2620,10 +2631,16 @@ async def private_check_requirements(update: Update, context: ContextTypes.DEFAU
             # 获取可显示的条件文本
             if req.requirement_type == 'CHANNEL':
                 display_name = req.channel_username or str(req.channel_id)
-                condition_text = f"关注频道: @{display_name}"
+                # 智能显示频道用户名，如果不以@开头则添加@
+                if display_name and not display_name.startswith('@'):
+                    display_name = f"@{display_name}"
+                condition_text = f"关注频道: {display_name}"
             elif req.requirement_type == 'GROUP':
                 display_name = req.group_username or str(req.group_id)
-                condition_text = f"加入群组: @{display_name}"
+                # 智能显示群组用户名，如果不以@开头则添加@
+                if display_name and not display_name.startswith('@'):
+                    display_name = f"@{display_name}"
+                condition_text = f"加入群组: {display_name}"
             elif req.requirement_type == 'REGISTRATION_TIME':
                 condition_text = f"账号注册时间: {req.min_registration_days}天以上"
             else:

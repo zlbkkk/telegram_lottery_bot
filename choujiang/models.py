@@ -193,11 +193,11 @@ class LotteryRequirement(models.Model):
         
         # 清理标识符用于设置其他字段
         identifier = link.strip()
-        # 修复格式问题：如果用户输入了 @https://t.me/xxx
-        if identifier.startswith('@https://'):
-            identifier = identifier[1:]
-        
-        if identifier.startswith('https://t.me/'):
+        # 修复格式问题：处理各种链接格式
+        if identifier.startswith('@https://t.me/'):
+            identifier = identifier[14:]  # 直接提取用户名部分
+            print(f"移除 @https://t.me/ 前缀，结果: {identifier}")
+        elif identifier.startswith('https://t.me/'):
             identifier = identifier[13:]
             print(f"移除 https://t.me/ 前缀，结果: {identifier}")
         elif identifier.startswith('@'):
@@ -243,7 +243,9 @@ class LotteryRequirement(models.Model):
         
         # 清理chat_identifier
         identifier = link.strip()
-        if identifier.startswith('https://t.me/'):
+        if identifier.startswith('@https://t.me/'):
+            identifier = identifier[14:]  # 直接提取用户名部分
+        elif identifier.startswith('https://t.me/'):
             identifier = identifier[13:]
         elif identifier.startswith('@'):
             identifier = identifier[1:]

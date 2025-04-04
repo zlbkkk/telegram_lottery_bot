@@ -2239,7 +2239,7 @@ async def process_lottery_join(update: Update, context: ContextTypes.DEFAULT_TYP
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton(
                     f"加入群组 {group.group_title or '抽奖群组'}", 
-                    url=f"https://t.me/{group.group_username}" if group.group_username else f"https://t.me/c/{str(group.group_id)[4:]}"
+                    url=f"https://t.me/c/{str(group.group_id)[4:]}" if str(group.group_id).startswith('-100') else "#"
                 )]
             ])
             
@@ -2305,27 +2305,33 @@ async def process_lottery_join(update: Update, context: ContextTypes.DEFAULT_TYP
         
         if success:
             # 发送成功消息
-            if points_required > 0:
-                await message.reply_text(
-                    f"✅ 您已成功参与抽奖活动！\n"
-                    f"已扣除 {points_required} 积分\n"
-                    f"剩余积分: {user_points - points_required}\n"
-                    f"请等待开奖结果。我们会在这里通知您！"
-                )
-            else:
-                await message.reply_text(
-                    f"✅ 您已成功参与抽奖活动！\n"
-                    f"无需扣除积分\n"
-                    f"请等待开奖结果。我们会在这里通知您！"
-                )
+            draw_time_str = "未设置"
             
-            logger.info(f"[抽奖参与] 用户 {user.id} 成功参与抽奖ID={lottery_id}，扣除积分={points_required}")
-            
-            # 返回到群组的按钮
+            try:
+                # 处理开奖时间，如果未设置则显示"未设置"
+                if lottery.draw_time:
+                    # 确保使用北京时间 (UTC+8)
+                    from datetime import timedelta
+                    from django.utils import timezone
+                    
+                    # 如果draw_time已经是aware datetime，先转换为北京时间
+                    if timezone.is_aware(lottery.draw_time):
+                        beijing_time = lottery.draw_time.astimezone(timezone.timezone(timedelta(hours=8)))
+                    else:
+                        # 如果是naive datetime，假设它已经是北京时间
+                        beijing_time = lottery.draw_time
+                        
+                    draw_time_str = beijing_time.strftime("%Y-%m-%d %H:%M")
+            except Exception as e:
+                logger.error(f"[抽奖参与] 处理开奖时间出错: {e}")
+                draw_time_str = "未设置" 
+                
+            # 准备"返回群组"按钮
+            keyboard = None
             group_link = None
-            if group.group_username:
-                group_link = f"https://t.me/{group.group_username}"
-            elif str(group.group_id).startswith('-100'):
+            
+            # 使用group_id来构建群组链接，避免使用不存在的group_username属性
+            if str(group.group_id).startswith('-100'):
                 group_link = f"https://t.me/c/{str(group.group_id)[4:]}"
                 
             if group_link:
@@ -2333,11 +2339,40 @@ async def process_lottery_join(update: Update, context: ContextTypes.DEFAULT_TYP
                     [InlineKeyboardButton("返回群组", url=group_link)]
                 ])
                 
-                await message.reply_text("您可以点击下方按钮返回群组。", reply_markup=keyboard)
+            try:
+                if points_required > 0:
+                    await message.reply_text(
+                        f"✅ 您已成功参与抽奖活动！\n"
+                        f"已扣除 {points_required} 积分\n"
+                        f"剩余积分: {user_points - points_required}\n"
+                        f"【{draw_time_str}】开奖，请关注群组，我们也会私聊通知你。",
+                        reply_markup=keyboard
+                    )
+                else:
+                    await message.reply_text(
+                        f"✅ 您已成功参与抽奖活动！\n"
+                        f"无需扣除积分\n"
+                        f"【{draw_time_str}】开奖，请关注群组，我们也会私聊通知你。",
+                        reply_markup=keyboard
+                    )
                 
-            return True
+                logger.info(f"[抽奖参与] 用户 {user.id} 成功参与抽奖ID={lottery_id}，扣除积分={points_required}")
+                return True
+            except Exception as msg_e:
+                # 如果发送消息出错，记录错误并使用更简单的消息格式
+                logger.error(f"发送参与成功消息时出错: {msg_e}")
+                try:
+                    await message.reply_text(
+                        f"✅ 您已成功参与抽奖活动！\n"
+                        f"已扣除 {points_required} 积分\n"
+                        f"请关注群组，我们会在开奖后通知你。",
+                        reply_markup=keyboard
+                    )
+                except:
+                    pass
+                return True
         else:
-            await message.reply_text("参与抽奖时出错，请重试。")
+            await message.reply_text("参与抽奖失败，请稍后重试。")
             return False
             
     except Exception as e:
@@ -2346,7 +2381,7 @@ async def process_lottery_join(update: Update, context: ContextTypes.DEFAULT_TYP
         return False
 
 async def process_lottery_check(update: Update, context: ContextTypes.DEFAULT_TYPE, lottery_id: int) -> None:
-    """处理用户通过深度链接检查抽奖参与条件"""
+    """处理检查抽奖条件的逻辑，支持来自消息和回调查询的请求"""
     user = update.effective_user
     
     # 确定消息对象 - 可能来自回调查询或直接消息
@@ -2358,207 +2393,334 @@ async def process_lottery_check(update: Update, context: ContextTypes.DEFAULT_TY
         logger.info(f"[抽奖条件检测] 用户 {user.id} 通过深度链接/命令检查抽奖ID={lottery_id}的参与条件")
     
     try:
-        # 获取抽奖信息和条件
+        # 获取抽奖信息和要求
         @sync_to_async
         def get_lottery_info_and_requirements(lottery_id):
-            from .models import Lottery, LotteryRequirement, Prize
-            
+            from .models import Lottery, LotteryRequirement
             try:
                 lottery = Lottery.objects.get(id=lottery_id)
                 requirements = list(LotteryRequirement.objects.filter(lottery=lottery))
-                prizes = list(Prize.objects.filter(lottery=lottery))
-                return lottery, requirements, prizes
+                prize_setup = lottery.prizes.exists()
+                return lottery, requirements, prize_setup
             except Lottery.DoesNotExist:
-                return None, [], []
+                logger.error(f"[抽奖条件检测] 抽奖ID={lottery_id}不存在")
+                return None, [], False
         
-        lottery, requirements, prizes = await get_lottery_info_and_requirements(lottery_id)
+        lottery, requirements, prize_setup = await get_lottery_info_and_requirements(lottery_id)
         
         if not lottery:
-            await message.reply_text("❌ 抽奖活动不存在。")
+            await message.reply_text("❌ 该抽奖ID不存在，请检查您的链接或输入。")
+            return
+        
+        # 检查抽奖是否已经设置好奖品
+        if not prize_setup:
+            await message.reply_text("⚠️ 该抽奖尚未完成设置，奖品信息不完整。")
+            return
+        
+        # 检查抽奖状态
+        if lottery.status != 'ACTIVE':
+            status_text = {
+                'DRAFT': '草稿',
+                'PAUSED': '已暂停',
+                'ENDED': '已结束',
+                'CANCELLED': '已取消'
+            }.get(lottery.status, lottery.status)
+            
+            await message.reply_text(f"⚠️ 该抽奖当前状态为: {status_text}，不可参与。")
             return
         
         # 构建抽奖信息文本
-        lottery_info = f"🎁 抽奖活动 🎁\n\n"
-        lottery_info += f"{lottery.title}\n"
+        lottery_text = f"🎲 抽奖活动: {lottery.title}\n\n"
+        
         if lottery.description:
-            lottery_info += f"{lottery.description}\n\n"
-        else:
-            lottery_info += "\n"
-            
-        # 添加参与所需积分
-        lottery_info += f"💰 参与所需积分: {lottery.points_required}\n\n"
+            lottery_text += f"{lottery.description}\n\n"
         
-        # 添加奖项信息
-        if prizes:
-            lottery_info += "🏆 奖项设置:\n"
-            for prize in prizes:
-                lottery_info += f"• {prize.name}: {prize.description} ({prize.quantity}名)\n"
-            lottery_info += "\n"
+        lottery_text += f"💰 参与所需积分: {lottery.points_required}\n"
         
-        # 添加时间信息
+        # 添加报名截止时间
         if lottery.signup_deadline:
-            signup_deadline = lottery.signup_deadline.strftime("%Y-%m-%d %H:%M")
-            lottery_info += f"⏰ 报名截止: {signup_deadline}\n"
+            from django.utils import timezone
+            now = timezone.now()
+            deadline = lottery.signup_deadline
+            
+            if deadline > now:
+                time_diff = deadline - now
+                days = time_diff.days
+                hours, remainder = divmod(time_diff.seconds, 3600)
+                minutes, _ = divmod(remainder, 60)
+                
+                if days > 0:
+                    time_left = f"{days}天{hours}小时"
+                elif hours > 0:
+                    time_left = f"{hours}小时{minutes}分钟"
+                else:
+                    time_left = f"{minutes}分钟"
+                
+                lottery_text += f"⏰ 报名截止: {deadline.strftime('%Y-%m-%d %H:%M')} (剩余{time_left})\n"
+            else:
+                lottery_text += f"⏰ 报名截止: {deadline.strftime('%Y-%m-%d %H:%M')} (已截止)\n"
         
+        # 添加开奖时间
         if lottery.draw_time:
-            draw_time = lottery.draw_time.strftime("%Y-%m-%d %H:%M")
-            lottery_info += f"🎯 开奖时间: {draw_time}\n\n"
+            lottery_text += f"🔮 开奖时间: {lottery.draw_time.strftime('%Y-%m-%d %H:%M')}\n"
         
-        # 添加参与条件信息
+        lottery_text += "\n🏆 奖品设置:\n"
+        
+        # 获取奖品信息
+        @sync_to_async
+        def get_prizes(lottery_id):
+            from .models import Prize
+            return list(Prize.objects.filter(lottery_id=lottery_id).order_by('order'))
+            
+        prizes = await get_prizes(lottery_id)
+        
+        for prize in prizes:
+            lottery_text += f"• {prize.name}: {prize.description} ({prize.quantity}名)\n"
+        
+        # 添加参与条件说明
         if requirements:
-            lottery_info += "📋 参与条件:\n"
+            lottery_text += "\n📝 参与条件:\n"
             for req in requirements:
                 if req.requirement_type == 'CHANNEL':
-                    lottery_info += f"• 必须加入: @{req.channel_username}\n"
+                    display_name = req.channel_username or str(req.channel_id)
+                    lottery_text += f"• 必须关注: @{display_name}\n"
                 elif req.requirement_type == 'GROUP':
-                    lottery_info += f"• 必须加入: @{req.group_username}\n"
+                    display_name = req.group_username or str(req.group_id)
+                    lottery_text += f"• 必须加入: @{display_name}\n"
                 elif req.requirement_type == 'REGISTRATION_TIME':
-                    lottery_info += f"• 账号注册时间: >{req.min_registration_days}天\n"
-            lottery_info += "\n"
+                    lottery_text += f"• 账号注册时间至少 {req.min_registration_days} 天\n"
+        else:
+            lottery_text += "\n此抽奖没有特殊参与条件。\n"
         
-        # 发送抽奖信息
-        await message.reply_text(lottery_info)
-        
-        if not requirements:
-            # 如果没有条件，直接参与
-            return await process_lottery_join(update, context, lottery_id)
-        
-        # 为每个频道/群组创建链接按钮
-        buttons = []
-        for req in requirements:
-            if req.requirement_type in ['CHANNEL', 'GROUP']:
-                username = req.channel_username if req.requirement_type == 'CHANNEL' else req.group_username
-                if username:
-                    buttons.append([InlineKeyboardButton(
-                        f"加入 @{username}", 
-                        url=f"https://t.me/{username}"
-                    )])
-        
-        # 添加检测按钮和直接参与按钮
-        buttons.append([InlineKeyboardButton(
-            "🔍 检测是否已满足条件", 
-            callback_data=f"private_check_req_{lottery_id}"
-        )])
-        buttons.append([InlineKeyboardButton(
-            "📤 不检查条件，直接参与", 
-            callback_data=f"private_join_lottery_{lottery_id}"
-        )])
+        # 创建检查条件按钮和参与按钮
+        buttons = [
+            [InlineKeyboardButton("🔍 检测是否已满足条件", callback_data=f"private_check_req_{lottery_id}")]
+        ]
         
         keyboard = InlineKeyboardMarkup(buttons)
         
-        # 发送提示消息
+        # 发送抽奖详情
         await message.reply_text(
-            "请先满足以上条件后再参与抽奖！\n\n"
-            "满足条件后，点击\"检测是否已满足条件\"按钮继续。\n"
-            "如果您确认已满足所有条件，也可以点击\"不检查条件，直接参与\"按钮。",
+            lottery_text,
             reply_markup=keyboard
         )
         
     except Exception as e:
-        logger.error(f"[抽奖条件检测] 处理检查条件时出错: {e}\n{traceback.format_exc()}")
-        await message.reply_text("检查条件时出错，请重试。")
+        logger.error(f"[抽奖条件检测] 处理抽奖条件检测时出错: {e}\n{traceback.format_exc()}")
+        await message.reply_text("检查抽奖条件时出错，请重试。")
+
+async def check_channel_subscription(bot, user_id, channel_username):
+    """检查用户是否订阅了指定频道"""
+    try:
+        # 如果是数字ID（如-100开头的频道ID）
+        if isinstance(channel_username, int) or (isinstance(channel_username, str) and channel_username.lstrip('-').isdigit()):
+            chat_id = channel_username
+        # 如果是用户名（如"channel_name"或"@channel_name"）
+        else:
+            # 删除可能的@前缀
+            username = channel_username.lstrip('@')
+            chat_id = f"@{username}"
+        
+        logger.info(f"正在检查用户 {user_id} 是否订阅频道 {chat_id}")
+        chat_member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+        valid_status = chat_member.status in ['member', 'administrator', 'creator']
+        
+        if valid_status:
+            logger.info(f"用户 {user_id} 已订阅频道 {chat_id}，状态为: {chat_member.status}")
+        else:
+            logger.info(f"用户 {user_id} 未订阅频道 {chat_id}，状态为: {chat_member.status}")
+            
+        return valid_status
+    except Exception as e:
+        logger.error(f"检查频道订阅状态时出错: {e}")
+        # 如果是因为频道不存在或者机器人不在频道中，记录更详细的错误信息
+        if "Chat not found" in str(e):
+            logger.error(f"找不到频道 {channel_username}，可能是ID/用户名错误或机器人不是该频道成员")
+        elif "User not found" in str(e):
+            logger.error(f"找不到用户 {user_id}，可能是该用户不在频道中或ID错误")
+        return False
+
+async def check_group_membership(bot, user_id, group_id):
+    """检查用户是否是指定群组的成员"""
+    try:
+        # 如果是数字ID（如-100开头的群组ID）
+        if isinstance(group_id, int) or (isinstance(group_id, str) and group_id.lstrip('-').isdigit()):
+            chat_id = group_id
+        # 如果是用户名（如"group_name"或"@group_name"）
+        else:
+            # 删除可能的@前缀
+            group_username = group_id.lstrip('@')
+            chat_id = f"@{group_username}"
+        
+        logger.info(f"正在检查用户 {user_id} 是否在群组 {chat_id} 中")
+        chat_member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+        valid_status = chat_member.status in ['member', 'administrator', 'creator']
+        
+        if valid_status:
+            logger.info(f"用户 {user_id} 在群组 {chat_id} 中，状态为: {chat_member.status}")
+        else:
+            logger.info(f"用户 {user_id} 在群组 {chat_id} 中，但状态为: {chat_member.status}，不视为有效成员")
+            
+        return valid_status
+    except Exception as e:
+        logger.error(f"检查群组成员状态时出错: {e}")
+        # 如果是因为群组不存在或者机器人不在群组中，记录更详细的错误信息
+        if "Chat not found" in str(e):
+            logger.error(f"找不到群组 {group_id}，可能是ID/用户名错误或机器人不是该群组成员")
+        elif "User not found" in str(e):
+            logger.error(f"找不到用户 {user_id}，可能是该用户不在群组中或ID错误")
+        return False
+
+async def check_registration_time(user_id, min_days):
+    """检查用户注册时间是否满足最低天数要求"""
+    try:
+        from jifen.models import User
+        user = await sync_to_async(User.objects.get)(telegram_id=user_id)
+        if not user.register_time:
+            return False
+        days_registered = (timezone.now() - user.register_time).days
+        return days_registered >= min_days
+    except Exception as e:
+        logger.error(f"检查注册时间时出错: {e}")
+        return False
 
 async def private_check_requirements(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """处理用户在私聊中点击检测条件按钮"""
+    """处理用户在私聊中点击检查参与条件按钮"""
     query = update.callback_query
     user = update.effective_user
+    bot = context.bot
     
-    await query.answer()
+    await query.answer("正在检查参与条件...")
     
     try:
         # 从回调数据中提取抽奖ID
         lottery_id = int(query.data.split("_")[3])
         logger.info(f"[私聊抽奖条件检测] 用户 {user.id} 在私聊中请求检测抽奖ID={lottery_id}的参与条件")
         
-        # 获取抽奖参与条件
-        @sync_to_async
-        def get_lottery_requirements(lottery_id):
-            from .models import Lottery, LotteryRequirement
-            try:
-                lottery = Lottery.objects.get(id=lottery_id)
-                return list(LotteryRequirement.objects.filter(lottery=lottery)), lottery
-            except Lottery.DoesNotExist:
-                logger.error(f"[私聊抽奖条件检测] 抽奖ID={lottery_id}不存在")
-                return None, None
-            
-        requirements, lottery = await get_lottery_requirements(lottery_id)
+        # 获取抽奖信息
+        lottery = await sync_to_async(Lottery.objects.get)(id=lottery_id)
         
-        if lottery is None:
-            await query.edit_message_text("❌ 抽奖活动不存在或已结束。")
+        # 检查该抽奖是否激活
+        if not lottery.is_active:
+            await query.edit_message_text("该抽奖活动已结束或未激活。")
+            logger.info(f"[私聊抽奖条件检测] 用户 {user.id} 尝试检测已结束的抽奖ID={lottery_id}")
             return
         
-        if not requirements:
-            # 如果没有条件，显示可以参与
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎲 立即参与抽奖", callback_data=f"private_join_lottery_{lottery_id}")]
-            ])
-            
-            await query.edit_message_text(
-                "此抽奖活动没有特殊参与条件，您可以直接参与！",
-                reply_markup=keyboard
-            )
-            return
-        
-        # 检查用户是否满足所有条件
-        all_requirements_met = True
+        # 初始化未满足的条件列表和已满足的条件列表
         unfulfilled_requirements = []
+        fulfilled_requirements = []
         
+        # 获取抽奖所有要求
+        requirements = await sync_to_async(list)(LotteryRequirement.objects.filter(lottery=lottery))
+        
+        # 检查每个要求
         for req in requirements:
-            if req.requirement_type == 'CHANNEL':
-                if not await check_channel_subscription(user.id, req.channel_username, context.bot):
-                    all_requirements_met = False
-                    unfulfilled_requirements.append(f"• 未关注频道: @{req.channel_username}")
-            elif req.requirement_type == 'GROUP':
-                if not await check_group_membership(user.id, req.group_username, context.bot):
-                    all_requirements_met = False
-                    unfulfilled_requirements.append(f"• 未加入群组: @{req.group_username}")
-            elif req.requirement_type == 'REGISTRATION_TIME':
-                if not await check_registration_time(user.id, req.min_registration_days):
-                    all_requirements_met = False
-                    unfulfilled_requirements.append(f"• 账号注册时间不满{req.min_registration_days}天")
-        
-        if all_requirements_met:
-            # 构建参与按钮
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🎲 立即参与抽奖", callback_data=f"private_join_lottery_{lottery_id}")]
-            ])
+            requirement_met = False
             
-            # 添加随机字符串以避免内容完全相同导致的错误
-            timestamp = int(time.time())
+            # 获取可显示的条件文本
+            if req.requirement_type == 'CHANNEL':
+                display_name = req.channel_username or str(req.channel_id)
+                condition_text = f"关注频道: @{display_name}"
+            elif req.requirement_type == 'GROUP':
+                display_name = req.group_username or str(req.group_id)
+                condition_text = f"加入群组: @{display_name}"
+            elif req.requirement_type == 'REGISTRATION_TIME':
+                condition_text = f"账号注册时间: {req.min_registration_days}天以上"
+            else:
+                condition_text = "未知条件"
+            
+            if req.requirement_type == 'CHANNEL':
+                # 检查频道订阅
+                is_subscribed = await check_channel_subscription(bot, user.id, req.channel_username)
+                if is_subscribed:
+                    fulfilled_requirements.append(f"✅ {condition_text}")
+                    requirement_met = True
+                else:
+                    unfulfilled_requirements.append({
+                        'text': f"❌ {condition_text}",
+                        'username': req.channel_username
+                    })
+                    
+            elif req.requirement_type == 'GROUP':
+                # 检查群组成员
+                is_member = await check_group_membership(bot, user.id, req.group_username)
+                if is_member:
+                    fulfilled_requirements.append(f"✅ {condition_text}")
+                    requirement_met = True
+                else:
+                    unfulfilled_requirements.append({
+                        'text': f"❌ {condition_text}",
+                        'username': req.group_username
+                    })
+                    
+            elif req.requirement_type == 'REGISTRATION_TIME':
+                # 检查注册时间
+                try:
+                    min_days = req.min_registration_days
+                    meets_time_req = await check_registration_time(user.id, min_days)
+                    if meets_time_req:
+                        fulfilled_requirements.append(f"✅ {condition_text}")
+                        requirement_met = True
+                    else:
+                        unfulfilled_requirements.append({
+                            'text': f"❌ {condition_text}",
+                            'username': None
+                        })
+                except ValueError:
+                    logger.error(f"[私聊抽奖条件检测] 时间要求值无效: {req.min_registration_days}")
+                    
+            else:
+                # 未知类型的要求
+                logger.warning(f"[私聊抽奖条件检测] 未知类型的要求: {req.requirement_type}")
+                unfulfilled_requirements.append({
+                    'text': f"❓ {condition_text} (未知类型)",
+                    'username': None
+                })
+        
+        # 创建重新检测按钮
+        buttons = []
+        for req in unfulfilled_requirements:
+            if req['username']:
+                buttons.append([InlineKeyboardButton(
+                    f"加入 @{req['username']}", 
+                    url=f"https://t.me/{req['username']}"
+                )])
+        
+        # 准备消息文本和按钮
+        if not unfulfilled_requirements:
+            # 用户满足所有条件
+            message_text = f"✅ 您已满足抽奖 「{lottery.title}」 的所有参与条件！\n\n您可以点击下方按钮参与抽奖。"
+            
+            # 显示参与抽奖按钮
+            buttons = [[InlineKeyboardButton("🎲 立即参与抽奖", callback_data=f"private_join_lottery_{lottery_id}")]]
+            keyboard = InlineKeyboardMarkup(buttons)
+            
             await query.edit_message_text(
-                f"✅ 恭喜！您已满足所有参与条件，现在可以参与抽奖了！\n\n检测时间: {timestamp}",
+                message_text,
                 reply_markup=keyboard
             )
-            logger.info(f"[私聊抽奖条件检测] 用户 {user.id} 在私聊中满足抽奖ID={lottery_id}的所有参与条件")
+            logger.info(f"[私聊抽奖条件检测] 用户 {user.id} 满足抽奖ID={lottery_id}的所有参与条件")
+            return
         else:
-            # 为每个未满足的条件创建链接按钮
-            buttons = []
-            for req in requirements:
-                if req.requirement_type in ['CHANNEL', 'GROUP']:
-                    username = req.channel_username if req.requirement_type == 'CHANNEL' else req.group_username
-                    if username:
-                        buttons.append([InlineKeyboardButton(
-                            f"加入 @{username}", 
-                            url=f"https://t.me/{username}"
-                        )])
+            # 用户未满足所有条件
+            message_text = f"❗ 您尚未满足抽奖 「{lottery.title}」 的以下参与条件：\n\n"
             
-            # 添加重新检测按钮和强制参与按钮
-            buttons.append([InlineKeyboardButton(
-                "🔄 重新检测", 
-                callback_data=f"private_check_req_{lottery_id}"
-            )])
-            buttons.append([InlineKeyboardButton(
-                "📤 不检查条件，直接参与", 
-                callback_data=f"private_join_lottery_{lottery_id}"
-            )])
+            # 只添加未满足的条件
+            for req in unfulfilled_requirements:
+                message_text += f"{req['text']}\n"
+            
+            # 将当前时间转换为北京时间
+            from datetime import datetime, timedelta
+            current_time = datetime.utcnow() + timedelta(hours=8)
+            beijing_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S")
+            
+            message_text += f"\n请先满足以上未满足的条件，然后点击\"重新检测\"按钮。\n\n检测时间: {beijing_time_str}"
+            
+            # 只添加重新检测按钮
+            buttons.append([InlineKeyboardButton("🔄 重新检测", callback_data=f"private_check_req_{lottery_id}")])
             
             keyboard = InlineKeyboardMarkup(buttons)
             
-            # 添加随机字符串以避免内容完全相同导致的错误
-            timestamp = int(time.time())
-            message_text = f"❌ 您尚未满足所有参与条件：\n\n"
-            message_text += "\n".join(unfulfilled_requirements)
-            message_text += f"\n\n请先满足以上条件，然后点击重新检测按钮。\n\n检测时间: {timestamp}"
             await query.edit_message_text(
                 message_text,
                 reply_markup=keyboard
@@ -2581,28 +2743,183 @@ async def private_join_lottery(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     user = update.effective_user
     
-    await query.answer()
+    await query.answer("正在处理您的抽奖参与请求...")
     
     try:
         # 从回调数据中提取抽奖ID
         lottery_id = int(query.data.split("_")[3])
         logger.info(f"[私聊参与抽奖] 用户 {user.id} 在私聊中请求参与抽奖ID={lottery_id}")
         
-        # 使用process_lottery_join处理
-        # 为了兼容process_lottery_join函数，我们需要修改update对象
-        # 将message属性设置为query.message
-        update.message = query.message
+        # 不要尝试修改update对象，而是直接使用query.message
+        message = query.message
         
-        # 设置context.args，以确保process_lottery_join可以正常运行
-        if not hasattr(context, 'args') or not context.args:
-            context.args = [str(lottery_id)]
+        # 获取抽奖信息
+        @sync_to_async
+        def get_lottery_info(lottery_id, user_id):
+            from .models import Lottery, Participant
+            from jifen.models import User
             
-        result = await process_lottery_join(update, context, lottery_id)
+            try:
+                lottery = Lottery.objects.get(id=lottery_id)
+                group = lottery.group
+                
+                try:
+                    user = User.objects.get(telegram_id=user_id, group=group)
+                    has_joined = Participant.objects.filter(lottery=lottery, user=user).exists()
+                    return lottery, user, has_joined, lottery.points_required, user.points, group
+                except User.DoesNotExist:
+                    logger.info(f"[抽奖参与] 用户 {user_id} 尝试参与抽奖 {lottery_id}，但在群组 {group.group_id} 中不存在")
+                    return lottery, None, False, lottery.points_required, 0, group
+            except Lottery.DoesNotExist:
+                logger.info(f"[抽奖参与] 用户 {user_id} 尝试参与不存在的抽奖 {lottery_id}")
+                return None, None, False, 0, 0, None
         
-        if result:
-            logger.info(f"[私聊参与抽奖] 用户 {user.id} 成功参与抽奖ID={lottery_id}")
+        lottery, user_obj, has_joined, points_required, user_points, group = await get_lottery_info(lottery_id, user.id)
+        
+        if not lottery:
+            await message.reply_text("❌ 抽奖活动不存在。")
+            return False
+        
+        if not user_obj:
+            # 用户不是群组成员，提示加入群组
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    f"加入群组 {group.group_title or '抽奖群组'}", 
+                    url=f"https://t.me/c/{str(group.group_id)[4:]}" if str(group.group_id).startswith('-100') else "#"
+                )]
+            ])
+            
+            await message.reply_text(
+                "❌ 您不是该抽奖所在群组的成员。\n\n"
+                "您需要先加入群组，与群组成员互动以获得积分，然后才能参与抽奖。\n\n"
+                "请点击下方按钮加入群组。加入后，请在群组中发送一些消息以便系统注册您的信息。",
+                reply_markup=keyboard
+            )
+            return False
+        
+        if has_joined:
+            await message.reply_text("您已经参与了该抽奖活动，请勿重复参与。")
+            return True
+        
+        # 检查用户是否有足够积分
+        if user_points < points_required:
+            await message.reply_text(
+                f"❌ 您的积分不足！\n\n"
+                f"参与抽奖需要 {points_required} 积分\n"
+                f"您当前的积分: {user_points}\n\n"
+                f"请通过与群组互动获取更多积分后再参与抽奖。"
+            )
+            return False
+        
+        # 参与抽奖
+        @sync_to_async
+        def join_raffle(lottery, user_obj, points_required):
+            from .models import Participant
+            from jifen.models import PointTransaction
+            from django.utils import timezone
+            import datetime
+            
+            # 创建参与记录
+            participant = Participant(
+                lottery=lottery,
+                user=user_obj,
+                joined_at=timezone.now(),
+                points_spent=points_required
+            )
+            participant.save()
+            
+            # 如果需要扣除积分
+            if points_required > 0:
+                # 扣除用户积分
+                user_obj.points -= points_required
+                user_obj.save()
+                
+                # 记录积分变动
+                transaction = PointTransaction(
+                    user=user_obj,
+                    group=user_obj.group,
+                    amount=-points_required,
+                    type='RAFFLE_PARTICIPATION',
+                    description=f"参与抽奖 '{lottery.title}'",
+                    transaction_date=datetime.date.today()
+                )
+                transaction.save()
+            
+            return True
+        
+        success = await join_raffle(lottery, user_obj, points_required)
+        
+        if success:
+            # 发送成功消息
+            draw_time_str = "未设置"
+            
+            try:
+                # 处理开奖时间，如果未设置则显示"未设置"
+                if lottery.draw_time:
+                    # 确保使用北京时间 (UTC+8)
+                    from datetime import timedelta
+                    from django.utils import timezone
+                    
+                    # 如果draw_time已经是aware datetime，先转换为北京时间
+                    if timezone.is_aware(lottery.draw_time):
+                        beijing_time = lottery.draw_time.astimezone(timezone.timezone(timedelta(hours=8)))
+                    else:
+                        # 如果是naive datetime，假设它已经是北京时间
+                        beijing_time = lottery.draw_time
+                        
+                    draw_time_str = beijing_time.strftime("%Y-%m-%d %H:%M")
+            except Exception as e:
+                logger.error(f"[抽奖参与] 处理开奖时间出错: {e}")
+                draw_time_str = "未设置" 
+                
+            # 准备"返回群组"按钮
+            keyboard = None
+            group_link = None
+            
+            # 使用group_id来构建群组链接，避免使用不存在的group_username属性
+            if str(group.group_id).startswith('-100'):
+                group_link = f"https://t.me/c/{str(group.group_id)[4:]}"
+                
+            if group_link:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("返回群组", url=group_link)]
+                ])
+                
+            try:
+                if points_required > 0:
+                    await message.reply_text(
+                        f"✅ 您已成功参与抽奖活动！\n"
+                        f"已扣除 {points_required} 积分\n"
+                        f"剩余积分: {user_points - points_required}\n"
+                        f"【{draw_time_str}】开奖，请关注群组，我们也会私聊通知你。",
+                        reply_markup=keyboard
+                    )
+                else:
+                    await message.reply_text(
+                        f"✅ 您已成功参与抽奖活动！\n"
+                        f"无需扣除积分\n"
+                        f"【{draw_time_str}】开奖，请关注群组，我们也会私聊通知你。",
+                        reply_markup=keyboard
+                    )
+                
+                logger.info(f"[抽奖参与] 用户 {user.id} 成功参与抽奖ID={lottery_id}，扣除积分={points_required}")
+                return True
+            except Exception as msg_e:
+                # 如果发送消息出错，记录错误并使用更简单的消息格式
+                logger.error(f"发送参与成功消息时出错: {msg_e}")
+                try:
+                    await message.reply_text(
+                        f"✅ 您已成功参与抽奖活动！\n"
+                        f"已扣除 {points_required} 积分\n"
+                        f"请关注群组，我们会在开奖后通知你。",
+                        reply_markup=keyboard
+                    )
+                except:
+                    pass
+                return True
         else:
-            logger.info(f"[私聊参与抽奖] 用户 {user.id} 参与抽奖ID={lottery_id}失败")
+            await message.reply_text("参与抽奖失败，请稍后重试。")
+            return False
             
     except Exception as e:
         logger.error(f"[私聊参与抽奖] 处理私聊参与按钮时出错: {e}\n{traceback.format_exc()}")
@@ -2614,6 +2931,7 @@ async def private_join_lottery(update: Update, context: ContextTypes.DEFAULT_TYP
                 await query.message.reply_text("参与抽奖时出错，请重试。")
             except:
                 pass
+        return False
 
 # 创建抽奖设置对话处理器
 lottery_setup_handler = ConversationHandler(
@@ -2863,14 +3181,8 @@ async def view_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             context.args = [str(lottery_id)]
             logger.info(f"[查看抽奖] 为用户 {user.id} 设置context.args={context.args}")
         
-        # 创建一个临时的消息对象，用于process_lottery_check函数
-        # 因为process_lottery_check函数期望使用update.message
-        if not hasattr(update, 'message') or not update.message:
-            # 使用query.message作为临时消息对象
-            update.message = query.message
-            logger.info(f"[查看抽奖] 为用户 {user.id} 设置临时消息对象，消息ID={query.message.message_id}")
-        
-        # 使用process_lottery_check处理
+        # 不再尝试修改update.message，而是直接调用process_lottery_check并传递消息对象
+        # 直接调用process_lottery_check，不修改update对象
         await process_lottery_check(update, context, lottery_id)
         
         # 删除临时消息

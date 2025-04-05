@@ -78,6 +78,9 @@ from choujiang.lottery_handlers import lottery_setup_handler, get_lottery_handle
 # 导入抽奖模型
 from choujiang.models import Lottery
 
+# 其他模块将在需要时导入
+# from choujiang.list_lotteries import view_group_lotteries
+
 # 设置日志
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -379,6 +382,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("抽奖设置", callback_data=f"raffle_setting_{group_id}")
                 ],
                 [
+                    InlineKeyboardButton("📊 查看抽奖列表", callback_data=f"list_lotteries_{group_id}")
+                ],
+                [
                     InlineKeyboardButton("🔗 生成邀请链接", callback_data=f"invite_link_{group_id}")
                 ],
                 [
@@ -399,6 +405,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text=f"您正在管理 {group_name} 的设置。请选择操作：",
                 reply_markup=reply_markup
             )
+        
+        # 处理查看群组抽奖列表
+        elif query.data.startswith("list_lotteries_"):
+            from choujiang.list_lotteries import view_group_lotteries
+            await view_group_lotteries(update, context)
         
         elif query.data == "back_to_groups":
             # 返回群组列表

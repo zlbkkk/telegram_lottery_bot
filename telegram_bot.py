@@ -78,6 +78,9 @@ from choujiang.lottery_handlers import lottery_setup_handler, get_lottery_handle
 # 导入抽奖复制功能
 from choujiang.lottery_copy import get_lottery_copy_handlers
 
+# 导入抽奖自动开奖功能
+from choujiang.lottery_drawer import start_lottery_drawer
+
 # 导入抽奖模型
 from choujiang.models import Lottery
 
@@ -685,6 +688,11 @@ def run_bot():
         
         # 创建应用
         application = ApplicationBuilder().token(TOKEN).build()
+        
+        # 初始化抽奖开奖器
+        logger.info("正在初始化抽奖自动开奖功能...")
+        loop.run_until_complete(start_lottery_drawer(application.bot))
+        logger.info("抽奖自动开奖功能已初始化")
         
         # 注册命令处理器
         application.add_handler(CommandHandler("start", start))

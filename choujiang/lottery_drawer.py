@@ -133,11 +133,23 @@ class LotteryDrawer:
                     # 仅在群组中公布结果
                     if lottery.announce_results_in_group:
                         result_text = (
-                            f"🎁 抽奖活动结束\n\n"
-                            f"标题: {lottery.title}\n"
-                            f"描述: {lottery.description}\n\n"
-                            f"❗ 很遗憾，本次抽奖没有人参与，抽奖已结束。"
+                            f"🔔 抽奖活动结束通知 🔔\n\n"
+                            f"📣 活动名称：《{lottery.title}》\n"
+                            f"📝 活动详情：{lottery.description}\n\n"
+                            f"❗️ 很遗憾，本次抽奖活动未能吸引到参与者\n"
+                            f"⏱️ 抽奖已自动结束\n\n"
+                            f"💡 想了解更多抽奖活动，请联系群管理员 @TEST999kkkBot\n"
                         )
+                        
+                        # 安全地添加机器人用户名
+                        try:
+                            if hasattr(self.bot, 'username') and self.bot.username:
+                                result_text += f"🤖 机器人支持: @{self.bot.username}"
+                            else:
+                                result_text += f"🤖 机器人支持"
+                        except Exception as e:
+                            logger.warning(f"[抽奖开奖] 获取bot用户名时出错: {e}")
+                            result_text += f"🤖 机器人支持"
                         
                         # 使用sync_to_async处理群组ID获取
                         @sync_to_async
@@ -248,11 +260,11 @@ class LotteryDrawer:
             
             # 构建中奖结果文本
             result_text = (
-                f"🎁 抽奖活动开奖结果 🎁\n\n"
-                f"标题: {lottery.title}\n"
-                f"描述: {lottery.description}\n\n"
-                f"👥 共有 {len(participants)} 人参与\n"
-                f"🏆 恭喜以下用户中奖:\n\n"
+                f"✨✨✨ 🎊 抽奖活动圆满结束 🎊 ✨✨✨\n\n"
+                f"📣 活动名称：《{lottery.title}》\n"
+                f"📝 活动详情：{lottery.description}\n\n"
+                f"👥 本次共有 {len(participants)} 位幸运儿参与抽奖\n"
+                f"✅ 抽奖结果已揭晓！恭喜以下幸运用户：\n\n"
             )
             
             # 按奖品分组显示中奖者
@@ -260,9 +272,21 @@ class LotteryDrawer:
             for winner in winners:
                 if current_prize != winner['prize'].name:
                     current_prize = winner['prize'].name
-                    result_text += f"\n{winner['prize_name']} ({winner['prize_desc']}):\n"
+                    result_text += f"\n🏆 {winner['prize_name']} ({winner['prize_desc']})：\n"
                 
-                result_text += f"- {winner['username']}\n"
+                result_text += f"  👉 {winner['username']}\n"
+            
+            # 添加联系方式到结果文本末尾
+            try:
+                if hasattr(self.bot, 'username') and self.bot.username:
+                    result_text += f"\n📱 中奖者请私信联系管理员 @TEST999kkkBot 领取奖品"
+                    result_text += f"\n🤖 机器人支持: @{self.bot.username}"
+                else:
+                    result_text += f"\n📱 中奖者请私信联系管理员 @TEST999kkkBot 领取奖品"
+                    result_text += f"\n🤖 机器人支持"
+            except Exception as e:
+                logger.warning(f"[抽奖开奖] 获取bot用户名时出错: {e}")
+                result_text += f"\n📱 中奖者请私信联系管理员 @TEST999kkkBot 领取奖品"
             
             # 发送中奖通知
             try:
@@ -311,11 +335,24 @@ class LotteryDrawer:
                     for winner in winners:
                         try:
                             private_text = (
-                                f"🎉 恭喜您在「{lottery.title}」抽奖中获得 {winner['prize_name']} ({winner['prize_desc']})！\n\n"
-                                f"抽奖详情: {lottery.description}\n\n"
-                                f"群组: {group_title}\n"
-                                f"请联系群管理员领取奖品。"
+                                f"✨🎊 恭喜您！幸运之星 🌟 🎊✨\n\n"
+                                f"🏆 在「{lottery.title}」抽奖活动中，您成功获得了：\n"
+                                f"🎁 {winner['prize_name']} 🎁\n"
+                                f"💎 奖品详情：{winner['prize_desc']}\n\n"
+                                f"📝 活动简介：{lottery.description}\n\n"
+                                f"🏘️ 所在群组：{group_title}\n\n"
+                                f"🔔 领奖方式：请联系群管理员 @TEST999kkkBot 领取您的奖品\n\n"
                             )
+                            
+                            # 安全地添加机器人用户名
+                            try:
+                                if hasattr(self.bot, 'username') and self.bot.username:
+                                    private_text += f"📱 联系机器人: @{self.bot.username}"
+                                else:
+                                    private_text += f"📱 联系机器人"
+                            except Exception as e:
+                                logger.warning(f"[抽奖开奖] 获取bot用户名时出错: {e}")
+                                private_text += f"📱 联系机器人"
                             
                             await self.bot.send_message(
                                 chat_id=winner['user_id'],

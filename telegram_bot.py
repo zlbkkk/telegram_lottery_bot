@@ -689,6 +689,11 @@ def run_bot():
         # 创建应用
         application = ApplicationBuilder().token(TOKEN).build()
         
+        # 初始化bot对象
+        logger.info("正在初始化bot对象...")
+        loop.run_until_complete(application.bot.initialize())
+        logger.info("bot对象初始化完成")
+        
         # 初始化抽奖开奖器
         logger.info("正在初始化抽奖自动开奖功能...")
         loop.run_until_complete(start_lottery_drawer(application.bot))

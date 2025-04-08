@@ -12,6 +12,7 @@ import traceback
 from django.utils import timezone
 import asyncio
 import time
+from .lottery_admin_handlers import get_admin_draw_conversation_handler
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -2265,7 +2266,7 @@ async def join_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # 如果没有参与条件，直接发送私聊链接并完成参与
         if not requirements:
             # 创建参与抽奖的深度链接，确保在私聊中可以识别
-            deep_link = f"https://t.me/{bot_username}?start=join_lottery_{lottery_id}"
+            deep_link = f"https://t.me/{bot_username}?start=lottery_{lottery_id}"
             
             # 创建按钮，引导用户到私聊
             keyboard = InlineKeyboardMarkup([
@@ -2296,7 +2297,7 @@ async def join_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
             
         # 如果有参与条件，使用新的命令格式
-        direct_link = f"https://t.me/{bot_username}?start=check_lottery_{lottery_id}"
+        direct_link = f"https://t.me/{bot_username}?start=lottery_{lottery_id}"
         
         # 创建按钮，引导用户到私聊
         keyboard = InlineKeyboardMarkup([
@@ -2330,65 +2331,107 @@ async def join_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await query.message.reply_text("参与抽奖时出错，请重试。")
 
 async def handle_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """处理/start命令，用于处理深度链接参数"""
+    """处理 /start 命令"""
     user = update.effective_user
-    message = update.message
+    chat_id = update.effective_chat.id
     
-    logger.info(f"[Start Command] 用户 {user.id} ({user.username or '无用户名'}) 执行 /start 命令，参数: {context.args}")
-    
-    # 检查是否有深度链接参数
-    if not context.args:
-        # 如果没有参数，让telegram_bot.py中的start函数处理
-        logger.info(f"[Start Command] 用户 {user.id} 没有提供深度链接参数，让主start处理器处理")
-        # 发送一条调试消息
-        await message.reply_text("这是handle_start_command函数的执行，但没有深度链接参数，将由主start函数继续处理")
-        return
-    
-    # 获取深度链接参数
-    deep_link_param = context.args[0]
-    logger.info(f"[Start Command] 处理深度链接参数: {deep_link_param}")
+    logger.info(f"[开始命令] 用户 {user.id} ({user.username or user.first_name}) 发送了 /start 命令，参数：{context.args}")
     
     try:
-        # 处理参与抽奖的深度链接
-        if deep_link_param.startswith("join_lottery_"):
-            try:
-                lottery_id = int(deep_link_param.split("_")[2])
-                logger.info(f"[Start Command] 检测到参与抽奖深度链接，抽奖ID={lottery_id}")
-                await message.reply_text(f"正在处理您参与抽奖ID={lottery_id}的请求...")
-                await process_lottery_join(update, context, lottery_id)
-            except (IndexError, ValueError) as e:
-                logger.error(f"[Start Command] 解析join_lottery参数出错: {e}, 参数值={deep_link_param}")
-                await message.reply_text(f"无法识别抽奖ID，请使用 /check_lottery 命令查看可参与的抽奖")
+        # 获取用户信息
+        @sync_to_async
+        def get_user():
+            return User.objects.filter(telegram_id=user.id).first()
         
-        # 处理检查参与条件的深度链接
-        elif deep_link_param.startswith("check_lottery_"):
-            try:
-                lottery_id = int(deep_link_param.split("_")[2])
-                logger.info(f"[Start Command] 检测到检查抽奖条件深度链接，抽奖ID={lottery_id}")
-                await message.reply_text(f"正在检查抽奖ID={lottery_id}的参与条件...")
-                await process_lottery_check(update, context, lottery_id)
-            except (IndexError, ValueError) as e:
-                logger.error(f"[Start Command] 解析check_lottery参数出错: {e}, 参数值={deep_link_param}")
-                await message.reply_text(f"无法识别抽奖ID，请使用 /check_lottery 命令查看可参与的抽奖")
+        user_obj = await get_user()
         
-        # 其他深度链接参数处理...
+        if not user_obj:
+            await update.message.reply_text(
+                "您还没有注册，请先加入我们的群组。"
+            )
+            return
+        
+        # 检查是否是管理员
+        is_admin = user_obj.is_admin
+        
+        # 检查是否有深度链接参数（从抽奖链接点击进入）
+        if context.args and len(context.args) > 0:
+            try:
+                # 尝试从参数中提取抽奖ID
+                param = context.args[0]
+                
+                # 处理不同格式的深度链接参数
+                lottery_id = None
+                # 格式1：lottery_123
+                if param.startswith("lottery_"):
+                    lottery_id = int(param.split("_")[1])
+                # 格式2：join_lottery_123
+                elif param.startswith("join_lottery_"):
+                    lottery_id = int(param.split("_")[2])
+                # 格式3：check_lottery_123
+                elif param.startswith("check_lottery_"):
+                    lottery_id = int(param.split("_")[2])
+                # 格式4：纯数字ID
+                elif param.isdigit():
+                    lottery_id = int(param)
+                
+                if lottery_id:
+                    logger.info(f"[开始命令] 检测到抽奖ID：{lottery_id}，直接显示抽奖详情")
+                    
+                    # 直接调用process_lottery_check函数显示抽奖详情
+                    await process_lottery_check(update, context, lottery_id)
+                    return
+                else:
+                    logger.warning(f"[开始命令] 未能从参数 {param} 中提取有效的抽奖ID")
+            except (ValueError, IndexError) as e:
+                logger.error(f"[开始命令] 解析抽奖ID参数出错: {e}")
+                # 如果解析出错，继续显示所有抽奖
+        
+        # 如果没有有效的抽奖ID参数，则显示所有抽奖
+        @sync_to_async
+        def get_active_lotteries():
+            return list(Lottery.objects.filter(status='ACTIVE'))
+        
+        lotteries = await get_active_lotteries()
+        
+        # 创建键盘
+        keyboard = []
+        
+        # 如果是管理员，添加设置中奖用户按钮
+        if is_admin:
+            keyboard.append([
+                InlineKeyboardButton(
+                    "设置指定的中奖人",
+                    callback_data="set_winners"
+                )
+            ])
+        
+        # 添加抽奖列表按钮
+        if lotteries:
+            for lottery in lotteries:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"查看抽奖: {lottery.title}",
+                        callback_data=f"view_lottery_{lottery.id}"
+                    )
+                ])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        # 根据是否有抽奖活动显示不同的消息
+        if lotteries:
+            message_text = "请选择要查看的抽奖活动："
         else:
-            logger.info(f"[Start Command] 未识别的深度链接参数: {deep_link_param}")
-            
-            # 如果参数看起来可能是抽奖ID，尝试直接处理
-            if deep_link_param.isdigit():
-                lottery_id = int(deep_link_param)
-                logger.info(f"[Start Command] 参数可能是抽奖ID，尝试直接检查抽奖ID={lottery_id}")
-                await message.reply_text(f"正在尝试将参数'{deep_link_param}'解析为抽奖ID...")
-                await process_lottery_check(update, context, lottery_id)
-            else:
-                # 未识别的参数，返回提示信息
-                logger.info(f"[Start Command] 未识别的参数，无法处理: {deep_link_param}")
-                await message.reply_text(f"无法识别参数'{deep_link_param}'，请使用 /check_lottery 命令查看可参与的抽奖。")
-            
+            message_text = "当前没有进行中的抽奖活动。"
+        
+        await update.message.reply_text(
+            message_text,
+            reply_markup=reply_markup
+        )
+        
     except Exception as e:
-        logger.error(f"处理深度链接参数时出错: {e}\n{traceback.format_exc()}")
-        await message.reply_text(f"处理您的请求时出错，请使用 /check_lottery 命令查看可参与的抽奖。")
+        logger.error(f"[开始命令] 处理命令时出错: {e}\n{traceback.format_exc()}")
+        await update.message.reply_text("处理请求时出错，请重试。")
 
 async def process_lottery_join(update: Update, context: ContextTypes.DEFAULT_TYPE, lottery_id: int) -> None:
     """处理用户通过深度链接直接参与抽奖"""
@@ -2589,6 +2632,8 @@ async def process_lottery_check(update: Update, context: ContextTypes.DEFAULT_TY
         logger.info(f"[抽奖条件检测] 用户 {user.id} 通过深度链接/命令检查抽奖ID={lottery_id}的参与条件")
     
     try:
+        logger.info(f"[抽奖条件检测] 开始处理抽奖ID={lottery_id}的详情查看请求")
+        
         # 获取抽奖信息和要求
         @sync_to_async
         def get_lottery_info_and_requirements(lottery_id):
@@ -3255,21 +3300,15 @@ lottery_setup_handler = ConversationHandler(
 def get_lottery_handlers():
     """返回所有抽奖相关的处理器"""
     return [
-        lottery_setup_handler,
+        lottery_setup_handler,  # 使用已定义的变量
         CommandHandler("start", handle_start_command),
         CallbackQueryHandler(publish_lottery_to_group, pattern="^publish_lottery_\d+$"),
         CallbackQueryHandler(join_lottery, pattern="^join_lottery_\d+$"),
         CallbackQueryHandler(private_check_requirements, pattern="^private_check_req_\d+$"),
         CallbackQueryHandler(private_join_lottery, pattern="^private_join_lottery_\d+$"),
-        # 新增直接处理抽奖检查的命令处理器
         CommandHandler("check_lottery", direct_check_lottery),
-        # 新增处理查看抽奖按钮的回调
         CallbackQueryHandler(view_lottery, pattern="^view_lottery_\d+$"),
-        # 移除以下3个全局处理器，因为它们已经在对话处理器的MEDIA_UPLOAD状态中处理
-        # CallbackQueryHandler(add_photo, pattern="^add_photo_\d+$"),
-        # CallbackQueryHandler(add_video, pattern="^add_video_\d+$"),
-        # CallbackQueryHandler(skip_media, pattern="^skip_media_\d+$"),
-        # 这里可以添加其他抽奖相关的处理器
+        get_admin_draw_conversation_handler(),  # 调用函数而不是直接返回函数
     ]
 
 # 添加直接处理抽奖检查的函数
@@ -3420,3 +3459,52 @@ async def view_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await query.message.reply_text(f"处理您的请求时出错，请重试或使用 /check_lottery {lottery_id} 命令查看抽奖。")
         except Exception as inner_e:
             logger.error(f"[查看抽奖] 发送错误消息时发生二次错误: {inner_e}")
+
+async def handle_set_winners(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理设置中奖人的回调"""
+    query = update.callback_query
+    user = update.effective_user
+    
+    await query.answer()
+    
+    try:
+        # 获取用户信息
+        @sync_to_async
+        def get_user():
+            return User.objects.filter(telegram_id=user.id).first()
+        
+        user_obj = await get_user()
+        
+        if not user_obj or not user_obj.is_admin:
+            await query.edit_message_text("您没有管理员权限，无法使用此功能。")
+            return
+        
+        # 获取所有进行中的抽奖
+        @sync_to_async
+        def get_active_lotteries():
+            return list(Lottery.objects.filter(status='ACTIVE'))
+        
+        lotteries = await get_active_lotteries()
+        
+        if not lotteries:
+            await query.edit_message_text("当前没有进行中的抽奖活动。")
+            return
+        
+        # 创建抽奖选择键盘
+        keyboard = []
+        for lottery in lotteries:
+            keyboard.append([InlineKeyboardButton(
+                f"{lottery.title} (ID: {lottery.id})",
+                callback_data=f"select_lottery_{lottery.id}"
+            )])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "请选择要设置中奖用户的抽奖活动：",
+            reply_markup=reply_markup
+        )
+        
+    except Exception as e:
+        logger.error(f"[设置中奖人] 处理回调时出错: {e}\n{traceback.format_exc()}")
+        await query.edit_message_text("处理请求时出错，请重试。")

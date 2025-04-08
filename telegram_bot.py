@@ -255,9 +255,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"处理/start命令，用户ID={user.id}，用户名={user.first_name}，参数={context.args}")
     
-    # 添加一条明确的测试消息
-    await update.message.reply_text(f"👋 你好，{user.first_name}！我是机器人，正在处理你的请求...")
-    
     try:
         # 检查是否有深度链接参数
         if context.args:
@@ -395,7 +392,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     InlineKeyboardButton("抽奖设置", callback_data=f"raffle_setting_{group_id}")
                 ],
                 [
-                    InlineKeyboardButton("📊 查看抽奖列表", callback_data=f"list_lotteries_{group_id}")
+                    InlineKeyboardButton("📊 查看抽奖列表", callback_data=f"list_lotteries_{group_id}"),
+                    InlineKeyboardButton("🎯 设置中奖用户", callback_data="set_winners")
                 ],
                 [
                     InlineKeyboardButton("🔗 生成邀请链接", callback_data=f"invite_link_{group_id}")

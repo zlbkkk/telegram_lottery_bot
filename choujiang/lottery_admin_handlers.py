@@ -18,6 +18,46 @@ SELECT_LOTTERY = 1
 SELECT_WINNERS = 2
 CONFIRM_WINNERS = 3
 
+async def update_user_info(telegram_user):
+    """更新用户信息（如用户名）到数据库"""
+    @sync_to_async
+    def update_user_in_db():
+        try:
+            # 查找用户的所有记录，而不仅仅是第一条
+            users = User.objects.filter(telegram_id=telegram_user.id)
+            if not users.exists():
+                return None
+                
+            updated_count = 0
+            for user in users:
+                is_updated = False
+                # 更新用户名
+                if telegram_user.username and user.username != telegram_user.username:
+                    user.username = telegram_user.username
+                    is_updated = True
+                # 更新名字和姓氏
+                if telegram_user.first_name and user.first_name != telegram_user.first_name:
+                    user.first_name = telegram_user.first_name
+                    is_updated = True
+                if telegram_user.last_name and (user.last_name or "") != (telegram_user.last_name or ""):
+                    user.last_name = telegram_user.last_name
+                    is_updated = True
+                    
+                if is_updated:
+                    user.save()
+                    updated_count += 1
+            
+            if updated_count > 0:
+                logger.info(f"[用户信息] 已更新用户 {telegram_user.id} 的 {updated_count} 条记录，用户名: {telegram_user.username}")
+                
+            # 返回第一条记录，保持原有函数返回行为
+            return users.first()
+        except Exception as e:
+            logger.error(f"[用户信息] 更新用户信息时出错: {e}\n{traceback.format_exc()}")
+        return None
+    
+    return await update_user_in_db()
+
 async def start_admin_draw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """处理管理员开始设置中奖用户的命令"""
     user = update.effective_user
@@ -37,6 +77,9 @@ async def start_admin_draw(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     logger.info(f"[管理员抽奖] 用户 {user.id} ({user.username or user.first_name}) 开始设置中奖用户")
     
     try:
+        # 更新用户信息（如用户名）
+        await update_user_info(user)
+        
         # 获取用户信息
         @sync_to_async
         def get_user():
@@ -107,6 +150,9 @@ async def select_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
     
     try:
+        # 更新用户信息（如用户名）
+        await update_user_info(user)
+        
         # 获取抽奖信息
         @sync_to_async
         def get_lottery():
@@ -114,12 +160,14 @@ async def select_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         
         lottery = await get_lottery()
         
-        # 获取参与者列表
+        # 获取参与者列表及其telegram_id
         @sync_to_async
-        def get_participants():
-            return list(Participant.objects.filter(lottery=lottery))
+        def get_participants_with_telegram_ids():
+            participants_list = list(Participant.objects.filter(lottery=lottery).select_related('user'))
+            # 在数据库查询中一次性获取所有需要的数据
+            return participants_list, [p.user.telegram_id for p in participants_list]
         
-        participants = await get_participants()
+        participants, participant_telegram_ids = await get_participants_with_telegram_ids()
         
         if not participants:
             await query.edit_message_text("该抽奖活动还没有参与者。")
@@ -128,16 +176,31 @@ async def select_lottery(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         # 存储抽奖信息到上下文
         context.user_data['admin_draw'] = {
             'lottery_id': lottery_id,
-            'participants': [p.user.telegram_id for p in participants]
+            'participants': participant_telegram_ids
         }
+        
+        # 获取参与者详细信息
+        @sync_to_async
+        def get_participants_details():
+            result = []
+            for participant in participants:
+                user = participant.user
+                result.append({
+                    'telegram_id': user.telegram_id,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name or '',
+                    'username': user.username or '无用户名'
+                })
+            return result
+        
+        participant_details = await get_participants_details()
         
         # 创建参与者选择键盘
         keyboard = []
-        for participant in participants:
-            user = participant.user
+        for p_detail in participant_details:
             keyboard.append([InlineKeyboardButton(
-                f"{user.first_name} {user.last_name or ''} (@{user.username or '无用户名'})",
-                callback_data=f"select_winner_{user.telegram_id}"
+                f"{p_detail['first_name']} {p_detail['last_name']} (@{p_detail['username']})",
+                callback_data=f"select_winner_{p_detail['telegram_id']}"
             )])
         
         keyboard.append([InlineKeyboardButton("完成选择", callback_data="finish_selection")])
@@ -160,10 +223,14 @@ async def select_winner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     """处理选择中奖用户的回调"""
     query = update.callback_query
     user_id = int(query.data.split("_")[2])
+    user = update.effective_user
     
     await query.answer()
     
     try:
+        # 更新当前管理员用户信息
+        await update_user_info(user)
+        
         admin_draw_data = context.user_data.get('admin_draw', {})
         selected_winners = admin_draw_data.get('selected_winners', set())
         
@@ -182,21 +249,30 @@ async def select_winner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         
         lottery = await get_lottery()
         
-        # 重新获取参与者列表
+        # 重新获取参与者列表及其详细信息
         @sync_to_async
-        def get_participants():
-            return list(Participant.objects.filter(lottery=lottery))
+        def get_participants_details():
+            participants_list = list(Participant.objects.filter(lottery=lottery).select_related('user'))
+            result = []
+            for participant in participants_list:
+                user = participant.user
+                result.append({
+                    'telegram_id': user.telegram_id,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name or '',
+                    'username': user.username or '无用户名'
+                })
+            return result
         
-        participants = await get_participants()
+        participant_details = await get_participants_details()
         
         # 更新键盘显示
         keyboard = []
-        for participant in participants:
-            user = participant.user
-            is_selected = user.telegram_id in selected_winners
+        for p_detail in participant_details:
+            is_selected = p_detail['telegram_id'] in selected_winners
             keyboard.append([InlineKeyboardButton(
-                f"{'✅ ' if is_selected else ''}{user.first_name} {user.last_name or ''} (@{user.username or '无用户名'})",
-                callback_data=f"select_winner_{user.telegram_id}"
+                f"{'✅ ' if is_selected else ''}{p_detail['first_name']} {p_detail['last_name']} (@{p_detail['username']})",
+                callback_data=f"select_winner_{p_detail['telegram_id']}"
             )])
         
         keyboard.append([InlineKeyboardButton("完成选择", callback_data="finish_selection")])
@@ -219,10 +295,14 @@ async def select_winner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def finish_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """处理完成选择的回调"""
     query = update.callback_query
+    user = update.effective_user
     
     await query.answer()
     
     try:
+        # 更新当前管理员用户信息
+        await update_user_info(user)
+        
         admin_draw_data = context.user_data.get('admin_draw', {})
         selected_winners = admin_draw_data.get('selected_winners', set())
         
@@ -244,16 +324,26 @@ async def finish_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        # 获取中奖用户信息
+        # 获取中奖用户信息并同时更新用户信息
         @sync_to_async
         def get_winner_info():
-            return list(User.objects.filter(telegram_id__in=selected_winners))
+            winners = list(User.objects.filter(telegram_id__in=selected_winners))
+            # 这里不需要更新用户信息，因为用户信息是从Telegram API获取的，而不是从数据库获取
+            return winners
         
         winners = await get_winner_info()
-        winners_text = "\n".join([
-            f"{i+1}. {w.first_name} {w.last_name or ''} (@{w.username or '无用户名'})"
-            for i, w in enumerate(winners)
-        ])
+        
+        # 使用集合来跟踪已经处理过的telegram_id，避免重复
+        processed_ids = set()
+        winners_text = ""
+        counter = 1
+        
+        # 逐个处理中奖者，确保每个用户只出现一次
+        for w in winners:
+            if w.telegram_id not in processed_ids:
+                processed_ids.add(w.telegram_id)
+                winners_text += f"{counter}. {w.first_name} {w.last_name or ''} (@{w.username or '无用户名'})\n"
+                counter += 1
         
         await query.edit_message_text(
             f"确认以下用户为抽奖 {lottery.title} 的中奖者：\n\n"
@@ -272,10 +362,14 @@ async def finish_selection(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 async def confirm_winners(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """处理确认中奖用户的回调"""
     query = update.callback_query
+    user = update.effective_user
     
     await query.answer()
     
     try:
+        # 更新当前管理员用户信息
+        await update_user_info(user)
+        
         admin_draw_data = context.user_data.get('admin_draw', {})
         selected_winners = list(admin_draw_data.get('selected_winners', set()))
         lottery_id = admin_draw_data['lottery_id']
@@ -287,9 +381,15 @@ async def confirm_winners(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         lottery = await get_lottery()
         
-        # 执行抽奖
-        from .lottery_drawer import manual_draw
-        await manual_draw(lottery_id, selected_winners)
+        # 执行抽奖 - 修改导入和调用方式
+        from .lottery_drawer import get_drawer_instance
+        drawer = get_drawer_instance()
+        if drawer:
+            await drawer.manual_draw(lottery_id, selected_winners)
+        else:
+            logger.error("[管理员抽奖] 无法获取抽奖开奖器实例")
+            await query.edit_message_text("处理请求时出错，请重试。")
+            return ConversationHandler.END
         
         await query.edit_message_text(
             f"抽奖 {lottery.title} 的中奖用户已设置完成！\n"
@@ -310,10 +410,14 @@ async def confirm_winners(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def reselect_winners(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """处理重新选择中奖用户的回调"""
     query = update.callback_query
+    user = update.effective_user
     
     await query.answer()
     
     try:
+        # 更新当前管理员用户信息
+        await update_user_info(user)
+        
         admin_draw_data = context.user_data.get('admin_draw', {})
         lottery_id = admin_draw_data['lottery_id']
         
@@ -324,21 +428,30 @@ async def reselect_winners(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         
         lottery = await get_lottery()
         
-        # 获取参与者列表
+        # 获取参与者列表及其详细信息
         @sync_to_async
-        def get_participants():
-            return list(Participant.objects.filter(lottery=lottery))
+        def get_participants_details():
+            participants_list = list(Participant.objects.filter(lottery=lottery).select_related('user'))
+            result = []
+            for participant in participants_list:
+                user = participant.user
+                result.append({
+                    'telegram_id': user.telegram_id,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name or '',
+                    'username': user.username or '无用户名'
+                })
+            return result
         
-        participants = await get_participants()
+        participant_details = await get_participants_details()
         
         # 创建参与者选择键盘
         keyboard = []
-        for participant in participants:
-            user = participant.user
-            is_selected = user.telegram_id in admin_draw_data.get('selected_winners', set())
+        for p_detail in participant_details:
+            is_selected = p_detail['telegram_id'] in admin_draw_data.get('selected_winners', set())
             keyboard.append([InlineKeyboardButton(
-                f"{'✅ ' if is_selected else ''}{user.first_name} {user.last_name or ''} (@{user.username or '无用户名'})",
-                callback_data=f"select_winner_{user.telegram_id}"
+                f"{'✅ ' if is_selected else ''}{p_detail['first_name']} {p_detail['last_name']} (@{p_detail['username']})",
+                callback_data=f"select_winner_{p_detail['telegram_id']}"
             )])
         
         keyboard.append([InlineKeyboardButton("完成选择", callback_data="finish_selection")])

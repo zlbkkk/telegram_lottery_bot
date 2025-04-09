@@ -359,12 +359,12 @@ class LotteryDrawer:
                             # 安全地添加机器人用户名
                             try:
                                 if hasattr(self.bot, 'username') and self.bot.username:
-                                    private_text += f"📱 联系机器人: @{self.bot.username}"
+                                    private_text += f"📱 联系机器人: @zhuhao99900"
                                 else:
-                                    private_text += f"📱 联系机器人"
+                                    private_text += f"📱 联系机器人: @zhuhao99900"
                             except Exception as e:
                                 logger.warning(f"[抽奖开奖] 获取bot用户名时出错: {e}")
-                                private_text += f"📱 联系机器人"
+                                private_text += f"📱 联系机器人: @zhuhao99900"
                             
                             await self.bot.send_message(
                                 chat_id=winner['user_id'],

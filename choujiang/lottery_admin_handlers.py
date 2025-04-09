@@ -9,6 +9,7 @@ import logging
 from asgiref.sync import sync_to_async
 import traceback
 from django.utils import timezone
+from .lottery_drawer import get_drawer_instance
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -381,19 +382,53 @@ async def confirm_winners(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         lottery = await get_lottery()
         
-        # 执行抽奖 - 修改导入和调用方式
-        from .lottery_drawer import get_drawer_instance
+        # 不直接开奖，而是保存指定的中奖者信息到数据库
         drawer = get_drawer_instance()
+        
         if drawer:
-            await drawer.manual_draw(lottery_id, selected_winners)
+            # 调用允许仅保存指定中奖者的方法
+            success = await drawer.manual_draw(lottery_id, selected_winners, allow_save_only=True)
+            if not success:
+                logger.error("[管理员抽奖] 保存指定中奖者信息失败")
+                await query.edit_message_text("处理请求时出错，请重试。")
+                return ConversationHandler.END
         else:
-            logger.error("[管理员抽奖] 无法获取抽奖开奖器实例")
-            await query.edit_message_text("处理请求时出错，请重试。")
-            return ConversationHandler.END
+            # 如果无法获取drawer实例，则使用原来的方法保存
+            @sync_to_async
+            def save_specified_winners():
+                # 将选中的用户ID列表转换为逗号分隔的字符串
+                winners_str = ','.join(map(str, selected_winners))
+                
+                # 保存到抽奖记录中
+                lottery.specified_winners = winners_str
+                lottery.save()
+                
+                # 添加日志
+                LotteryLog.objects.create(
+                    lottery=lottery,
+                    user=User.objects.get(telegram_id=user.id),
+                    action='UPDATE',
+                    details=f"设置指定中奖者: {len(selected_winners)}人"
+                )
+                return True
+                
+            success = await save_specified_winners()
+            
+            if not success:
+                logger.error("[管理员抽奖] 保存指定中奖者信息失败")
+                await query.edit_message_text("处理请求时出错，请重试。")
+                return ConversationHandler.END
+        
+        # 格式化开奖时间显示
+        draw_time_str = "未设置"
+        if lottery.draw_time:
+            draw_time_str = lottery.draw_time.strftime("%Y-%m-%d %H:%M")
         
         await query.edit_message_text(
-            f"抽奖 {lottery.title} 的中奖用户已设置完成！\n"
-            "系统将自动通知中奖用户。"
+            f"抽奖 《{lottery.title}》 的中奖用户已设置完成！\n\n"
+            f"已指定 {len(selected_winners)} 位中奖用户。\n"
+            f"系统将在设定的开奖时间 ({draw_time_str}) 进行开奖。\n\n"
+            f"届时将自动通知中奖用户。"
         )
         
         # 清理上下文数据

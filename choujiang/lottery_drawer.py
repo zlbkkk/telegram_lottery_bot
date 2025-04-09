@@ -52,7 +52,19 @@ class LotteryDrawer:
             # 依次执行开奖
             for lottery in lotteries_to_draw:
                 logger.info(f"[自动开奖] 准备开奖: ID={lottery.id}, 标题={lottery.title}")
-                success = await self.draw_lottery(lottery.id)
+                
+                # 检查是否有指定的中奖者
+                specified_winners = None
+                if lottery.specified_winners:
+                    try:
+                        # 从字符串转换为ID列表
+                        specified_winners = [int(id) for id in lottery.specified_winners.split(',') if id.strip()]
+                        logger.info(f"[自动开奖] 抽奖ID={lottery.id}使用指定中奖者，共{len(specified_winners)}人")
+                    except Exception as e:
+                        logger.error(f"[自动开奖] 处理指定中奖者时出错: {e}")
+                
+                # 执行开奖
+                success = await self.draw_lottery(lottery.id, specified_winners)
                 if success:
                     logger.info(f"[自动开奖] 抽奖ID={lottery.id}开奖成功")
                 else:
@@ -138,7 +150,7 @@ class LotteryDrawer:
                             f"📝 活动详情：{lottery.description}\n\n"
                             f"❗️ 很遗憾，本次抽奖活动未能吸引到参与者\n"
                             f"⏱️ 抽奖已自动结束\n\n"
-                            f"💡 想了解更多抽奖活动，请联系群管理员 @TEST999kkkBot\n"
+                            f"💡 想了解更多抽奖活动，请联系群管理员 @kaijiang999_sz_bot\n"
                         )
                         
                         # 安全地添加机器人用户名
@@ -279,14 +291,14 @@ class LotteryDrawer:
             # 添加联系方式到结果文本末尾
             try:
                 if hasattr(self.bot, 'username') and self.bot.username:
-                    result_text += f"\n📱 中奖者请私信联系管理员 @TEST999kkkBot 领取奖品"
+                    result_text += f"\n📱 中奖者请私信联系管理员 @kaijiang999_sz_bot 领取奖品"
                     result_text += f"\n🤖 机器人支持: @{self.bot.username}"
                 else:
-                    result_text += f"\n📱 中奖者请私信联系管理员 @TEST999kkkBot 领取奖品"
+                    result_text += f"\n📱 中奖者请私信联系管理员 @kaijiang999_sz_bot 领取奖品"
                     result_text += f"\n🤖 机器人支持"
             except Exception as e:
                 logger.warning(f"[抽奖开奖] 获取bot用户名时出错: {e}")
-                result_text += f"\n📱 中奖者请私信联系管理员 @TEST999kkkBot 领取奖品"
+                result_text += f"\n📱 中奖者请私信联系管理员 @kaijiang999_sz_bot 领取奖品"
             
             # 发送中奖通知
             try:
@@ -341,7 +353,7 @@ class LotteryDrawer:
                                 f"💎 奖品详情：{winner['prize_desc']}\n\n"
                                 f"📝 活动简介：{lottery.description}\n\n"
                                 f"🏘️ 所在群组：{group_title}\n\n"
-                                f"🔔 领奖方式：请联系群管理员 @TEST999kkkBot 领取您的奖品\n\n"
+                                f"🔔 领奖方式：请联系群管理员 @kaijiang999_sz_bot 领取您的奖品\n\n"
                             )
                             
                             # 安全地添加机器人用户名
@@ -487,25 +499,50 @@ class LotteryDrawer:
             # 每分钟检查一次
             await asyncio.sleep(60)
     
-    async def manual_draw(self, lottery_id, specified_winners=None):
+    async def manual_draw(self, lottery_id, specified_winners=None, allow_save_only=False):
         """
         手动开奖
         
         参数:
         lottery_id: 抽奖ID
         specified_winners: 指定中奖者的telegram_id列表，如果为None则随机抽取
+        allow_save_only: 是否只保存指定的中奖者而不立即开奖，默认为False
         
         返回:
-        bool: 是否成功开奖
+        bool: 是否成功开奖或保存
         """
-        logger.info(f"[手动开奖] 开始手动开奖，抽奖ID={lottery_id}")
+        logger.info(f"[手动开奖] {'开始处理' if allow_save_only else '开始开奖'}，抽奖ID={lottery_id}")
         
         if specified_winners:
             logger.info(f"[手动开奖] 使用指定中奖者模式，指定的中奖者: {specified_winners}")
         else:
             logger.info(f"[手动开奖] 使用随机抽取模式")
             
-        return await self.draw_lottery(lottery_id, specified_winners)
+        if allow_save_only and specified_winners:
+            try:
+                # 只保存指定的中奖者信息
+                @sync_to_async
+                def save_specified_winners():
+                    try:
+                        lottery = Lottery.objects.get(id=lottery_id)
+                        
+                        # 将指定的中奖者ID转换为字符串并保存
+                        lottery.specified_winners = ','.join(map(str, specified_winners))
+                        lottery.save()
+                        
+                        logger.info(f"[手动开奖] 保存了指定中奖者信息: {lottery.specified_winners}")
+                        return True
+                    except Exception as e:
+                        logger.error(f"[手动开奖] 保存指定中奖者信息时出错: {e}\n{traceback.format_exc()}")
+                        return False
+                
+                return await save_specified_winners()
+            except Exception as e:
+                logger.error(f"[手动开奖] 处理指定中奖者时出错: {e}\n{traceback.format_exc()}")
+                return False
+        else:
+            # 直接执行开奖
+            return await self.draw_lottery(lottery_id, specified_winners)
 
 # 提供一个初始化抽奖开奖器的函数，便于在telegram_bot.py中调用
 async def start_lottery_drawer(bot):

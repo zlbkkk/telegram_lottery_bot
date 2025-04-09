@@ -65,6 +65,9 @@ class Lottery(models.Model):
     message_id = models.BigIntegerField(null=True, blank=True, verbose_name="抽奖消息ID")
     result_message_id = models.BigIntegerField(null=True, blank=True, verbose_name="结果消息ID")
     
+    # 指定中奖者
+    specified_winners = models.TextField(blank=True, null=True, verbose_name="指定中奖者ID列表", help_text="以逗号分隔的Telegram ID列表")
+    
     def save(self, *args, **kwargs):
         # 使用北京时间 (UTC+8)
         beijing_tz = dt_timezone(timedelta(hours=8))
